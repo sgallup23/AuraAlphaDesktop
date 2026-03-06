@@ -1,0 +1,76 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/v2/core/tauri-config-schema/schema.json",
+  "productName": "Aura Alpha",
+  "identifier": "cc.auraalpha.desktop",
+  "version": "1.0.0",
+  "build": {
+    "frontendDist": "../src",
+    "devUrl": "http://localhost:1420"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Aura Alpha",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 700,
+        "center": true,
+        "decorations": true,
+        "resizable": true,
+        "fullscreen": false,
+        "transparent": false
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/tray-icon.png",
+      "iconAsTemplate": true,
+      "tooltip": "Aura Alpha"
+    },
+    "security": {
+      "csp": "default-src 'self' https://auraalpha.cc https://*.auraalpha.cc; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://auraalpha.cc; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' https://auraalpha.cc https://*.auraalpha.cc wss://auraalpha.cc wss://*.auraalpha.cc"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "Aura Alpha",
+    "copyright": "2026 Aura Alpha",
+    "category": "Finance",
+    "shortDescription": "Algorithmic Trading Desk",
+    "longDescription": "Aura Alpha is a multi-bot, risk-siloed algorithmic trading platform with real-time monitoring, strategy management, and advanced analytics.",
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      },
+      "nsis": {
+        "installMode": "both"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1"]
+      },
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://auraalpha.cc/api/desktop/update/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "dialog": true
+    }
+  }
+}

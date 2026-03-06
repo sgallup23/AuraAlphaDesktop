@@ -1,0 +1,17 @@
+{
+  "name": "aura-alpha-desktop",
+  "version": "1.0.0",
+  "description": "Aura Alpha Trading Desk — Desktop Application",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:windows": "tauri build --target x86_64-pc-windows-msvc",
+    "tauri:build:macos": "tauri build --target universal-apple-darwin",
+    "tauri:build:linux": "tauri build --target x86_64-unknown-linux-gnu"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}
