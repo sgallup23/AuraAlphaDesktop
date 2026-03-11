@@ -1,9 +1,25 @@
+mod bot_manager;
+mod credential_store;
+
 use serde::Serialize;
+use std::collections::HashMap;
+use std::process::{Child, Command};
+use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WindowEvent,
+    Emitter, Manager, RunEvent, WindowEvent,
 };
+
+const EC2_API: &str = "https://auraalpha.cc";
+const HEALTH_URL: &str = "https://auraalpha.cc/api/system/health";
+const TELEMETRY_URL: &str = "https://auraalpha.cc/api/telemetry/latest";
+const REMOTE_API_URL: &str = "https://auraalpha.cc/api/remote";
+
+/// Managed state: holds the worker child process so we can kill it on exit
+struct WorkerState {
+    child: Mutex<Option<Child>>,
+}
 
 /// Bot status info returned to the frontend via IPC
 #[derive(Clone, Serialize)]
@@ -23,22 +39,68 @@ struct HealthSummary {
     total_pnl_today: f64,
 }
 
-/// IPC command: check API health
+/// Worker status info
+#[derive(Clone, Serialize)]
+struct WorkerStatus {
+    running: bool,
+    pid: Option<u32>,
+    project_path: Option<String>,
+}
+
+// ── EC2 live data helpers ─────────────────────────────────────────────
+
+/// IPC command: check API health — now parses real data from EC2
 #[tauri::command]
 async fn check_health() -> Result<HealthSummary, String> {
     let client = reqwest::Client::new();
     match client
-        .get("https://auraalpha.cc/api/system/health")
+        .get(HEALTH_URL)
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => Ok(HealthSummary {
-            api_up: true,
-            bots_active: 3,
-            total_positions: 0,
-            total_pnl_today: 0.0,
-        }),
+        Ok(resp) if resp.status().is_success() => {
+            let data: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Parse error: {}", e))?;
+
+            // Parse real bot data from health response
+            let bots = data.get("bots").and_then(|b| b.as_object());
+            let mut bots_active: u32 = 0;
+            let mut total_positions: u32 = 0;
+            let mut total_pnl: f64 = 0.0;
+
+            if let Some(bots_obj) = bots {
+                for (_key, info) in bots_obj {
+                    // Skip non-bot keys like "gateway_connected", "accounts", etc.
+                    if !info.is_object() || info.get("bot").is_none() {
+                        continue;
+                    }
+                    if info.get("status").and_then(|s| s.as_str()) == Some("OK") {
+                        bots_active += 1;
+                    }
+                    // Count positions from payload
+                    if let Some(payload) = info.get("payload") {
+                        if let Some(positions) = payload.get("positions").and_then(|p| p.as_array())
+                        {
+                            total_positions += positions.len() as u32;
+                        }
+                        if let Some(equity) = payload.get("equity") {
+                            total_pnl +=
+                                equity.get("day_pnl").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        }
+                    }
+                }
+            }
+
+            Ok(HealthSummary {
+                api_up: true,
+                bots_active,
+                total_positions,
+                total_pnl_today: total_pnl,
+            })
+        }
         Ok(resp) => Err(format!("API returned status {}", resp.status())),
         Err(e) => Err(format!("Connection failed: {}", e)),
     }
@@ -49,7 +111,7 @@ async fn check_health() -> Result<HealthSummary, String> {
 async fn get_bot_status() -> Result<Vec<BotStatus>, String> {
     let client = reqwest::Client::new();
     match client
-        .get("https://auraalpha.cc/api/telemetry/latest")
+        .get(TELEMETRY_URL)
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
@@ -93,6 +155,169 @@ async fn get_bot_status() -> Result<Vec<BotStatus>, String> {
     }
 }
 
+// ── Worker management ─────────────────────────────────────────────────
+
+/// Find the prodesk project directory (checks common paths)
+fn find_project_dir() -> Option<std::path::PathBuf> {
+    let home = dirs::home_dir()?;
+    let candidates = [
+        home.join("TRADING_DESK").join("prodesk"),
+        home.join("prodesk"),
+        home.join("AuraAlpha").join("prodesk"),
+    ];
+    candidates.into_iter().find(|p| {
+        p.join("ops").join("remote_worker.py").exists()
+    })
+}
+
+/// Read the REMOTE_WORKER_TOKEN from the project's .env file
+fn read_worker_token(project_dir: &std::path::Path) -> Option<String> {
+    let env_file = project_dir.join(".env");
+    if !env_file.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(env_file).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(val) = trimmed.strip_prefix("REMOTE_WORKER_TOKEN=") {
+            let token = val.trim().trim_matches('"').trim_matches('\'');
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Find a Python interpreter
+fn find_python(project_dir: &std::path::Path) -> String {
+    // Prefer project venv
+    let venv_python = project_dir.join(".venv").join("bin").join("python");
+    if venv_python.exists() {
+        return venv_python.to_string_lossy().to_string();
+    }
+    let venv_python3 = project_dir.join(".venv").join("bin").join("python3");
+    if venv_python3.exists() {
+        return venv_python3.to_string_lossy().to_string();
+    }
+    // Fallback to system
+    "python3".to_string()
+}
+
+/// Spawn the remote worker process
+fn spawn_worker(project_dir: &std::path::Path) -> Result<Child, String> {
+    let worker_script = project_dir.join("ops").join("remote_worker.py");
+    if !worker_script.exists() {
+        return Err("remote_worker.py not found".to_string());
+    }
+
+    let token = read_worker_token(project_dir)
+        .ok_or_else(|| "REMOTE_WORKER_TOKEN not found in .env".to_string())?;
+
+    let python = find_python(project_dir);
+    let log_dir = project_dir.join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_file = std::fs::File::create(log_dir.join("remote_worker.log"))
+        .map_err(|e| format!("Cannot create log file: {}", e))?;
+    let log_err = log_file
+        .try_clone()
+        .map_err(|e| format!("Cannot clone log file: {}", e))?;
+
+    Command::new(&python)
+        .arg(worker_script.to_string_lossy().as_ref())
+        .current_dir(project_dir)
+        .env("REMOTE_API_URL", REMOTE_API_URL)
+        .env("REMOTE_WORKER_TOKEN", &token)
+        .env("WORKER_ID", "desktop")
+        .env("POLL_INTERVAL", "30")
+        .stdout(log_file)
+        .stderr(log_err)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn worker: {}", e))
+}
+
+/// IPC command: start the remote worker
+#[tauri::command]
+async fn start_worker(state: tauri::State<'_, WorkerState>) -> Result<WorkerStatus, String> {
+    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
+
+    // Check if already running
+    if let Some(ref mut child) = *guard {
+        match child.try_wait() {
+            Ok(None) => {
+                return Ok(WorkerStatus {
+                    running: true,
+                    pid: Some(child.id()),
+                    project_path: find_project_dir().map(|p| p.to_string_lossy().to_string()),
+                });
+            }
+            _ => {
+                // Process exited, clear it
+                *guard = None;
+            }
+        }
+    }
+
+    let project_dir = find_project_dir().ok_or("Project directory not found")?;
+    let child = spawn_worker(&project_dir)?;
+    let pid = child.id();
+    *guard = Some(child);
+
+    Ok(WorkerStatus {
+        running: true,
+        pid: Some(pid),
+        project_path: Some(project_dir.to_string_lossy().to_string()),
+    })
+}
+
+/// IPC command: stop the remote worker
+#[tauri::command]
+async fn stop_worker(state: tauri::State<'_, WorkerState>) -> Result<WorkerStatus, String> {
+    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
+    if let Some(ref mut child) = *guard {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    *guard = None;
+
+    Ok(WorkerStatus {
+        running: false,
+        pid: None,
+        project_path: find_project_dir().map(|p| p.to_string_lossy().to_string()),
+    })
+}
+
+/// IPC command: check worker status
+#[tauri::command]
+async fn get_worker_status(state: tauri::State<'_, WorkerState>) -> Result<WorkerStatus, String> {
+    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
+    let project_path = find_project_dir().map(|p| p.to_string_lossy().to_string());
+
+    if let Some(ref mut child) = *guard {
+        match child.try_wait() {
+            Ok(None) => Ok(WorkerStatus {
+                running: true,
+                pid: Some(child.id()),
+                project_path,
+            }),
+            _ => {
+                *guard = None;
+                Ok(WorkerStatus {
+                    running: false,
+                    pid: None,
+                    project_path,
+                })
+            }
+        }
+    } else {
+        Ok(WorkerStatus {
+            running: false,
+            pid: None,
+            project_path,
+        })
+    }
+}
+
 /// IPC command: send a native desktop notification
 #[tauri::command]
 async fn send_notification(
@@ -124,6 +349,222 @@ async fn navigate_to(app: tauri::AppHandle, url: String) -> Result<(), String> {
     }
 }
 
+// ── Bot Management IPC Commands ──────────────────────────────────────
+
+/// IPC command: get list of all supported brokers with credential field definitions
+#[tauri::command]
+async fn get_available_brokers() -> Result<Vec<credential_store::BrokerInfo>, String> {
+    Ok(credential_store::get_broker_definitions())
+}
+
+/// IPC command: save broker credentials to encrypted store
+#[tauri::command]
+async fn configure_broker(
+    broker: String,
+    credentials: HashMap<String, String>,
+) -> Result<bool, String> {
+    credential_store::save_credentials(&broker, &credentials)?;
+    log::info!("Saved credentials for broker: {}", broker);
+    Ok(true)
+}
+
+/// IPC command: delete stored credentials for a broker
+#[tauri::command]
+async fn delete_broker_credentials(broker: String) -> Result<bool, String> {
+    credential_store::delete_credentials(&broker)?;
+    log::info!("Deleted credentials for broker: {}", broker);
+    Ok(true)
+}
+
+/// IPC command: list brokers that have stored credentials
+#[tauri::command]
+async fn list_configured_brokers() -> Result<Vec<String>, String> {
+    Ok(credential_store::list_configured_brokers())
+}
+
+/// IPC command: start a trading bot with the given configuration
+#[tauri::command]
+async fn start_bot(
+    state: tauri::State<'_, bot_manager::BotManagerState>,
+    config: bot_manager::BotConfig,
+) -> Result<bot_manager::BotInfo, String> {
+    let mut guard = state.bots.lock().map_err(|e| e.to_string())?;
+
+    // Check if bot with this name is already running
+    if let Some(existing) = guard.get_mut(&config.bot_name) {
+        if bot_manager::check_bot_alive(&mut existing.child) {
+            return Ok(bot_manager::BotInfo {
+                bot_name: config.bot_name.clone(),
+                broker: existing.config.broker.clone(),
+                pid: Some(existing.child.id()),
+                running: true,
+                config_path: Some(existing.config_path.to_string_lossy().to_string()),
+                log_path: Some(existing.log_path.to_string_lossy().to_string()),
+                started_at: Some(existing.started_at),
+            });
+        }
+        // Process died, remove it
+        guard.remove(&config.bot_name);
+    }
+
+    let project_dir =
+        bot_manager::find_project_dir().ok_or("Project directory not found")?;
+
+    // Load broker credentials from store
+    let creds = credential_store::load_credentials(&config.broker)
+        .unwrap_or_default();
+
+    // Write bot config to file
+    let creds_json = serde_json::to_value(&creds).unwrap_or_default();
+    let config_path =
+        bot_manager::write_bot_config(&project_dir, &config, &creds_json)?;
+
+    // Build env vars for broker
+    let broker_env: HashMap<String, String> = creds;
+
+    // Spawn the bot process
+    let (child, log_path) =
+        bot_manager::spawn_bot(&project_dir, &config, &config_path, &broker_env)?;
+
+    let pid = child.id();
+    let started_at = bot_manager::now_epoch();
+
+    let info = bot_manager::BotInfo {
+        bot_name: config.bot_name.clone(),
+        broker: config.broker.clone(),
+        pid: Some(pid),
+        running: true,
+        config_path: Some(config_path.to_string_lossy().to_string()),
+        log_path: Some(log_path.to_string_lossy().to_string()),
+        started_at: Some(started_at),
+    };
+
+    guard.insert(
+        config.bot_name.clone(),
+        bot_manager::BotProcess {
+            child,
+            config,
+            config_path,
+            log_path,
+            started_at,
+        },
+    );
+
+    log::info!("Started bot '{}' (PID {})", info.bot_name, pid);
+    Ok(info)
+}
+
+/// IPC command: stop a running bot by name
+#[tauri::command]
+async fn stop_bot(
+    state: tauri::State<'_, bot_manager::BotManagerState>,
+    bot_name: String,
+) -> Result<bot_manager::BotInfo, String> {
+    let mut guard = state.bots.lock().map_err(|e| e.to_string())?;
+
+    if let Some(mut process) = guard.remove(&bot_name) {
+        bot_manager::stop_bot_process(&mut process.child)?;
+        log::info!("Stopped bot '{}'", bot_name);
+        Ok(bot_manager::BotInfo {
+            bot_name,
+            broker: process.config.broker,
+            pid: None,
+            running: false,
+            config_path: Some(process.config_path.to_string_lossy().to_string()),
+            log_path: Some(process.log_path.to_string_lossy().to_string()),
+            started_at: Some(process.started_at),
+        })
+    } else {
+        Ok(bot_manager::BotInfo {
+            bot_name,
+            broker: String::new(),
+            pid: None,
+            running: false,
+            config_path: None,
+            log_path: None,
+            started_at: None,
+        })
+    }
+}
+
+/// IPC command: get status of a specific bot
+#[tauri::command]
+async fn get_local_bot_status(
+    state: tauri::State<'_, bot_manager::BotManagerState>,
+    bot_name: String,
+) -> Result<bot_manager::BotInfo, String> {
+    let mut guard = state.bots.lock().map_err(|e| e.to_string())?;
+
+    if let Some(process) = guard.get_mut(&bot_name) {
+        let running = bot_manager::check_bot_alive(&mut process.child);
+        Ok(bot_manager::BotInfo {
+            bot_name,
+            broker: process.config.broker.clone(),
+            pid: if running { Some(process.child.id()) } else { None },
+            running,
+            config_path: Some(process.config_path.to_string_lossy().to_string()),
+            log_path: Some(process.log_path.to_string_lossy().to_string()),
+            started_at: Some(process.started_at),
+        })
+    } else {
+        Ok(bot_manager::BotInfo {
+            bot_name,
+            broker: String::new(),
+            pid: None,
+            running: false,
+            config_path: None,
+            log_path: None,
+            started_at: None,
+        })
+    }
+}
+
+/// IPC command: list all local bots and their statuses
+#[tauri::command]
+async fn list_local_bots(
+    state: tauri::State<'_, bot_manager::BotManagerState>,
+) -> Result<Vec<bot_manager::BotInfo>, String> {
+    let mut guard = state.bots.lock().map_err(|e| e.to_string())?;
+    let mut result = Vec::new();
+
+    for (name, process) in guard.iter_mut() {
+        let running = bot_manager::check_bot_alive(&mut process.child);
+        result.push(bot_manager::BotInfo {
+            bot_name: name.clone(),
+            broker: process.config.broker.clone(),
+            pid: if running { Some(process.child.id()) } else { None },
+            running,
+            config_path: Some(process.config_path.to_string_lossy().to_string()),
+            log_path: Some(process.log_path.to_string_lossy().to_string()),
+            started_at: Some(process.started_at),
+        });
+    }
+
+    Ok(result)
+}
+
+/// IPC command: read recent lines from a bot's log file
+#[tauri::command]
+async fn get_bot_log(
+    state: tauri::State<'_, bot_manager::BotManagerState>,
+    bot_name: String,
+    tail_lines: Option<usize>,
+) -> Result<String, String> {
+    let guard = state.bots.lock().map_err(|e| e.to_string())?;
+
+    if let Some(process) = guard.get(&bot_name) {
+        let content = std::fs::read_to_string(&process.log_path)
+            .map_err(|e| format!("Cannot read log: {}", e))?;
+
+        let lines: Vec<&str> = content.lines().collect();
+        let n = tail_lines.unwrap_or(100);
+        let start = if lines.len() > n { lines.len() - n } else { 0 };
+        Ok(lines[start..].join("\n"))
+    } else {
+        Err(format!("Bot '{}' not found", bot_name))
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -132,19 +573,41 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(WorkerState {
+            child: Mutex::new(None),
+        })
+        .manage(bot_manager::BotManagerState::new())
         .invoke_handler(tauri::generate_handler![
+            // EC2 monitoring
             check_health,
             get_bot_status,
             send_notification,
             navigate_to,
+            // Remote worker
+            start_worker,
+            stop_worker,
+            get_worker_status,
+            // Broker management
+            get_available_brokers,
+            configure_broker,
+            delete_broker_credentials,
+            list_configured_brokers,
+            // Local bot management
+            start_bot,
+            stop_bot,
+            get_local_bot_status,
+            list_local_bots,
+            get_bot_log,
         ])
         .setup(|app| {
             // ── System tray ──────────────────────────────────────
             let show = MenuItem::with_id(app, "show", "Show Aura Alpha", true, None::<&str>)?;
             let health = MenuItem::with_id(app, "health", "Check Health", true, None::<&str>)?;
+            let worker_item =
+                MenuItem::with_id(app, "worker", "Start Worker", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
-            let menu = Menu::with_items(app, &[&show, &health, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &health, &worker_item, &quit])?;
 
             let _tray = TrayIconBuilder::new()
                 .menu(&menu)
@@ -165,7 +628,10 @@ pub fn run() {
                                     let _ = send_notification(
                                         app,
                                         "Aura Alpha Health".to_string(),
-                                        format!("API: {} | Bots: {}", status, h.bots_active),
+                                        format!(
+                                            "API: {} | Bots: {} | Positions: {} | Day P&L: ${:.2}",
+                                            status, h.bots_active, h.total_positions, h.total_pnl_today
+                                        ),
                                     )
                                     .await;
                                 }
@@ -180,7 +646,57 @@ pub fn run() {
                             }
                         });
                     }
+                    "worker" => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let state = app.state::<WorkerState>();
+                            match start_worker(state).await {
+                                Ok(ws) if ws.running => {
+                                    let _ = send_notification(
+                                        app,
+                                        "Compute Worker".to_string(),
+                                        format!("Worker started (PID {})", ws.pid.unwrap_or(0)),
+                                    )
+                                    .await;
+                                }
+                                Ok(_) => {
+                                    let _ = send_notification(
+                                        app,
+                                        "Compute Worker".to_string(),
+                                        "Worker failed to start".to_string(),
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    let _ = send_notification(
+                                        app,
+                                        "Compute Worker".to_string(),
+                                        format!("Error: {}", e),
+                                    )
+                                    .await;
+                                }
+                            }
+                        });
+                    }
                     "quit" => {
+                        // Kill worker on quit
+                        let state = app.state::<WorkerState>();
+                        if let Ok(mut guard) = state.child.lock() {
+                            if let Some(ref mut child) = *guard {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                            }
+                            *guard = None;
+                        }
+                        // Kill all local bots on quit
+                        let bot_state = app.state::<bot_manager::BotManagerState>();
+                        if let Ok(mut guard) = bot_state.bots.lock() {
+                            for (name, process) in guard.iter_mut() {
+                                log::info!("Stopping bot '{}' on quit", name);
+                                let _ = bot_manager::stop_bot_process(&mut process.child);
+                            }
+                            guard.clear();
+                        }
                         app.exit(0);
                     }
                     _ => {}
@@ -201,28 +717,67 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // ── Navigate to auraalpha.cc on startup ──────────────
+            // ── Auto-start remote worker if project found ─────────
+            let worker_state = app.state::<WorkerState>();
+            if let Some(project_dir) = find_project_dir() {
+                match spawn_worker(&project_dir) {
+                    Ok(child) => {
+                        log::info!(
+                            "Auto-started remote worker (PID {}) from {}",
+                            child.id(),
+                            project_dir.display()
+                        );
+                        if let Ok(mut guard) = worker_state.child.lock() {
+                            *guard = Some(child);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Could not auto-start worker: {}", e);
+                    }
+                }
+            } else {
+                log::info!("No project directory found — worker not auto-started. \
+                    Optimization and backtest jobs will remain queued until a worker connects.");
+            }
+
+            // ── Navigate to auraalpha.cc with live data splash ────
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Brief delay to let the splash/loading screen render
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
+                // Emit live data to splash screen while checking connectivity
                 let client = reqwest::Client::new();
-                let reachable = client
-                    .get("https://auraalpha.cc/api/system/health")
-                    .timeout(std::time::Duration::from_secs(5))
+                match client
+                    .get(HEALTH_URL)
+                    .timeout(std::time::Duration::from_secs(8))
                     .send()
                     .await
-                    .map(|r| r.status().is_success())
-                    .unwrap_or(false);
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        // Parse and emit live data to the splash screen
+                        if let Ok(data) = resp.json::<serde_json::Value>().await {
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                let _ = window.emit("ec2-health", &data);
+                            }
+                        }
 
-                if reachable {
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let url: tauri::Url = "https://auraalpha.cc".parse().unwrap();
-                        let _ = window.navigate(url);
+                        // Small delay so user sees the live status
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let url: tauri::Url = EC2_API.parse().unwrap();
+                            let _ = window.navigate(url);
+                        }
+                    }
+                    _ => {
+                        // EC2 not reachable — emit offline status
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let _ = window.emit("ec2-health", serde_json::json!({"offline": true}));
+                        }
+                        // index.html stays visible with retry button
                     }
                 }
-                // If not reachable, the local index.html stays visible with retry button
             });
 
             Ok(())

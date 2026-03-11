@@ -23,6 +23,11 @@
     "window-state:default",
     "process:default",
     "process:allow-exit",
-    "opener:default"
+    "opener:default",
+    "shell:allow-execute",
+    "shell:allow-spawn",
+    "core:event:default",
+    "core:event:allow-emit",
+    "core:event:allow-listen"
   ]
 }

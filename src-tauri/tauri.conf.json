@@ -4,7 +4,9 @@
   "identifier": "cc.auraalpha.desktop",
   "version": "1.0.0",
   "build": {
-    "frontendDist": "../src",
+    "frontendDist": "../dist",
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420"
   },
   "app": {

@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aura Alpha</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0D1117;
+      color: #E6EDF3;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Plus Jakarta Sans', sans-serif;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    #app {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+      max-width: 600px;
+      padding: 0 24px;
+    }
+
+    .logo {
+      width: 80px;
+      height: 80px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, #58A6FF 0%, #BC8CFF 50%, #3FB950 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 36px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -1px;
+      box-shadow: 0 0 40px rgba(88, 166, 255, 0.3);
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -0.5px;
+    }
+
+    .status {
+      color: #8B949E;
+      font-size: 14px;
+    }
+
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid #30363D;
+      border-top-color: #58A6FF;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Live data dashboard */
+    #live-panel {
+      display: none;
+      width: 100%;
+      background: #161B22;
+      border: 1px solid #30363D;
+      border-radius: 12px;
+      padding: 20px;
+      animation: fadeIn 0.4s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .live-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      color: #8B949E;
+    }
+
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #3FB950;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .metric {
+      background: #1C2128;
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+    }
+
+    .metric-label {
+      font-size: 11px;
+      color: #8B949E;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .metric-value {
+      font-size: 20px;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', 'SF Mono', monospace;
+    }
+
+    .metric-value.green { color: #3FB950; }
+    .metric-value.red { color: #F85149; }
+    .metric-value.blue { color: #58A6FF; }
+
+    .bots-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      justify-content: center;
+    }
+
+    .bot-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #1C2128;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-family: 'JetBrains Mono', 'SF Mono', monospace;
+    }
+
+    .bot-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .bot-dot.ok { background: #3FB950; }
+    .bot-dot.off { background: #F85149; }
+
+    .worker-status {
+      margin-top: 12px;
+      font-size: 12px;
+      color: #8B949E;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .worker-status .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .worker-status .dot.active { background: #3FB950; }
+    .worker-status .dot.inactive { background: #D29922; }
+
+    /* Error panel */
+    .error-panel {
+      display: none;
+      background: #161B22;
+      border: 1px solid #30363D;
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 400px;
+    }
+
+    .error-panel h2 {
+      color: #F85149;
+      font-size: 16px;
+      margin-bottom: 8px;
+    }
+
+    .error-panel p {
+      color: #8B949E;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .retry-btn {
+      margin-top: 16px;
+      padding: 8px 20px;
+      background: #58A6FF;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .retry-btn:hover { background: #79B8FF; }
+
+    .version {
+      position: fixed;
+      bottom: 12px;
+      right: 16px;
+      color: #30363D;
+      font-size: 11px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="logo">A</div>
+    <h1>Aura Alpha</h1>
+    <div id="loading">
+      <div class="spinner"></div>
+      <p class="status" id="status-text">Connecting to EC2...</p>
+    </div>
+
+    <!-- Live data panel — filled by EC2 health data -->
+    <div id="live-panel">
+      <div class="live-header">
+        <div class="live-dot"></div>
+        <span>Live from EC2</span>
+      </div>
+      <div class="metrics-grid">
+        <div class="metric">
+          <div class="metric-label">Bots Active</div>
+          <div class="metric-value blue" id="m-bots">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Positions</div>
+          <div class="metric-value" id="m-positions">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Day P&L</div>
+          <div class="metric-value" id="m-pnl">—</div>
+        </div>
+      </div>
+      <div class="bots-row" id="bots-row"></div>
+      <div class="worker-status" id="worker-status"></div>
+    </div>
+
+    <div class="error-panel" id="error-panel">
+      <h2>Connection Failed</h2>
+      <p id="error-text">Unable to reach auraalpha.cc. Check your internet connection and try again.</p>
+      <button class="retry-btn" onclick="connect()">Retry</button>
+    </div>
+  </div>
+  <div class="version" id="version">v1.0.0</div>
+
+  <script>
+    const REMOTE_URL = 'https://auraalpha.cc';
+    const HEALTH_URL = REMOTE_URL + '/api/system/health';
+
+    // Listen for Tauri events (ec2-health emitted from Rust backend)
+    if (window.__TAURI__) {
+      window.__TAURI__.event.listen('ec2-health', (event) => {
+        const data = event.payload;
+        if (data && !data.offline) {
+          showLiveData(data);
+        }
+      });
+    }
+
+    function showLiveData(data) {
+      const panel = document.getElementById('live-panel');
+      const statusText = document.getElementById('status-text');
+
+      // Parse bot data
+      const bots = data.bots || {};
+      let botsActive = 0;
+      let totalPositions = 0;
+      let totalPnl = 0;
+      const botNames = [];
+
+      for (const [name, info] of Object.entries(bots)) {
+        if (!info || typeof info !== 'object' || !info.bot) continue;
+        const isOk = info.status === 'OK';
+        if (isOk) botsActive++;
+        const payload = info.payload || {};
+        const positions = Array.isArray(payload.positions) ? payload.positions.length : 0;
+        const equity = payload.equity || {};
+        const dayPnl = equity.day_pnl || equity.day || 0;
+        totalPositions += positions;
+        totalPnl += dayPnl;
+        botNames.push({ name: info.bot || name, ok: isOk, positions });
+      }
+
+      // Update metrics
+      document.getElementById('m-bots').textContent = botsActive;
+      document.getElementById('m-positions').textContent = totalPositions;
+
+      const pnlEl = document.getElementById('m-pnl');
+      const pnlSign = totalPnl >= 0 ? '+' : '';
+      pnlEl.textContent = pnlSign + '$' + totalPnl.toFixed(2);
+      pnlEl.className = 'metric-value ' + (totalPnl >= 0 ? 'green' : 'red');
+
+      // Bot chips
+      const botsRow = document.getElementById('bots-row');
+      botsRow.innerHTML = botNames.map(b =>
+        `<div class="bot-chip">
+          <div class="bot-dot ${b.ok ? 'ok' : 'off'}"></div>
+          ${b.name.toUpperCase()} (${b.positions})
+        </div>`
+      ).join('');
+
+      // Regime info
+      if (data.regime) {
+        const regime = data.regime.current || 'unknown';
+        const workerDiv = document.getElementById('worker-status');
+        workerDiv.innerHTML = `
+          <div class="dot active"></div>
+          Regime: ${regime.replace(/_/g, ' ')} | Gateway: ${data.gateway?.connected ? 'Connected' : 'Disconnected'}
+        `;
+      }
+
+      panel.style.display = 'block';
+      statusText.textContent = 'Loading dashboard...';
+    }
+
+    async function connect() {
+      const loading = document.getElementById('loading');
+      const errorPanel = document.getElementById('error-panel');
+      const statusText = document.getElementById('status-text');
+      const livePanel = document.getElementById('live-panel');
+
+      loading.style.display = 'flex';
+      loading.style.flexDirection = 'column';
+      loading.style.alignItems = 'center';
+      loading.style.gap = '12px';
+      errorPanel.style.display = 'none';
+      statusText.textContent = 'Connecting to EC2...';
+
+      try {
+        const resp = await fetch(HEALTH_URL, { signal: AbortSignal.timeout(8000) });
+        if (resp.ok) {
+          const data = await resp.json();
+          showLiveData(data);
+
+          statusText.textContent = 'Connected. Loading dashboard...';
+          // Give user a moment to see the live status
+          await new Promise(r => setTimeout(r, 1500));
+          // Navigate the entire window to the remote app
+          window.location.href = REMOTE_URL;
+        } else {
+          throw new Error('API returned ' + resp.status);
+        }
+      } catch (err) {
+        loading.style.display = 'none';
+        livePanel.style.display = 'none';
+        errorPanel.style.display = 'block';
+        document.getElementById('error-text').textContent =
+          'Unable to reach auraalpha.cc: ' + err.message + '. Check your internet connection and try again.';
+      }
+    }
+
+    // Start connecting on load
+    connect();
+  </script>
+</body>
+</html>
