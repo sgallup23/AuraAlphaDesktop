@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    @apply bg-aura-bg text-aura-text;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    overflow-x: hidden;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { @apply bg-aura-bg; }
+  ::-webkit-scrollbar-thumb { @apply bg-aura-border rounded; }
+  ::-webkit-scrollbar-thumb:hover { background: #484F58; }
+  input::placeholder { color: #484F58; }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-aura-surface border border-aura-border rounded-lg;
+    backdrop-filter: blur(16px);
+  }
+  .btn-primary {
+    @apply px-5 py-2.5 bg-aura-blue text-white rounded-lg font-semibold text-sm transition-opacity hover:opacity-90 disabled:opacity-50;
+  }
+  .btn-danger {
+    @apply px-5 py-2.5 bg-aura-red text-white rounded-lg font-semibold text-sm transition-opacity hover:opacity-90;
+  }
+  .btn-secondary {
+    @apply px-5 py-2.5 bg-transparent text-aura-muted border border-aura-border rounded-lg text-sm font-medium transition-all hover:border-aura-blue hover:text-aura-text;
+  }
+  .input-field {
+    @apply w-full px-3.5 py-2.5 bg-aura-surface2 border border-aura-border rounded-lg text-aura-text text-sm outline-none focus:border-aura-blue transition-colors;
+  }
+  .status-dot {
+    @apply w-2 h-2 rounded-full inline-block flex-shrink-0;
+  }
+  .metric-tile {
+    @apply glass-panel p-4;
+  }
+}

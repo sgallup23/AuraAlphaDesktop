@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::Mutex;
 
 /// Configuration for a single bot instance
@@ -176,7 +176,6 @@ pub fn check_bot_alive(child: &mut Child) -> bool {
 pub fn stop_bot_process(child: &mut Child) -> Result<(), String> {
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
         // Send SIGTERM for graceful shutdown
         unsafe {
             libc::kill(child.id() as i32, libc::SIGTERM);

@@ -11,7 +11,6 @@ use tauri::{
     Emitter, Manager, RunEvent, WindowEvent,
 };
 
-const EC2_API: &str = "https://auraalpha.cc";
 const HEALTH_URL: &str = "https://auraalpha.cc/api/system/health";
 const TELEMETRY_URL: &str = "https://auraalpha.cc/api/telemetry/latest";
 const REMOTE_API_URL: &str = "https://auraalpha.cc/api/remote";
@@ -349,6 +348,129 @@ async fn navigate_to(app: tauri::AppHandle, url: String) -> Result<(), String> {
     }
 }
 
+// ── Auth Token & Persistence IPC Commands ────────────────────────────
+
+/// IPC command: save auth tokens to persistent store
+#[tauri::command]
+async fn save_auth_token(
+    app: tauri::AppHandle,
+    access_token: String,
+    refresh_token: String,
+    user_json: String,
+) -> Result<bool, String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("auth.json").map_err(|e| e.to_string())?;
+    store.set("access_token", serde_json::Value::String(access_token));
+    store.set("refresh_token", serde_json::Value::String(refresh_token));
+    store.set("user", serde_json::Value::String(user_json));
+    store.save().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// IPC command: load auth tokens from persistent store
+#[tauri::command]
+async fn load_auth_token(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("auth.json").map_err(|e| e.to_string())?;
+    let access = store.get("access_token").unwrap_or(serde_json::Value::Null);
+    let refresh = store.get("refresh_token").unwrap_or(serde_json::Value::Null);
+    let user = store.get("user").unwrap_or(serde_json::Value::Null);
+    Ok(serde_json::json!({
+        "access_token": access,
+        "refresh_token": refresh,
+        "user": user
+    }))
+}
+
+/// IPC command: clear auth tokens from persistent store
+#[tauri::command]
+async fn clear_auth_token(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("auth.json").map_err(|e| e.to_string())?;
+    store.delete("access_token");
+    store.delete("refresh_token");
+    store.delete("user");
+    store.save().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// IPC command: create a detached panel window
+#[tauri::command]
+async fn create_panel_window(
+    app: tauri::AppHandle,
+    panel_id: String,
+    panel_title: String,
+    width: f64,
+    height: f64,
+) -> Result<bool, String> {
+    use tauri::WebviewWindowBuilder;
+    use tauri::WebviewUrl;
+    let label = format!("panel-{}", panel_id.replace(|c: char| !c.is_alphanumeric(), "-"));
+    let url_str = format!("index.html?panel={}", panel_id);
+    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url_str.into()))
+        .title(&panel_title)
+        .inner_size(width, height)
+        .min_inner_size(640.0, 480.0)
+        .center()
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// IPC command: save a single user preference
+#[tauri::command]
+async fn save_preference(app: tauri::AppHandle, key: String, value: serde_json::Value) -> Result<bool, String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("preferences.json").map_err(|e| e.to_string())?;
+    store.set(&key, value);
+    store.save().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// IPC command: load all user preferences
+#[tauri::command]
+async fn load_preferences(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("preferences.json").map_err(|e| e.to_string())?;
+    let keys = store.keys();
+    let mut map = serde_json::Map::new();
+    for key in keys {
+        if let Some(val) = store.get(&key) {
+            map.insert(key, val);
+        }
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
+/// IPC command: save a named workspace layout
+#[tauri::command]
+async fn save_workspace(app: tauri::AppHandle, name: String, layout_json: String) -> Result<bool, String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("workspaces.json").map_err(|e| e.to_string())?;
+    store.set(&name, serde_json::Value::String(layout_json));
+    store.save().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// IPC command: load a named workspace layout
+#[tauri::command]
+async fn load_workspace(app: tauri::AppHandle, name: String) -> Result<String, String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("workspaces.json").map_err(|e| e.to_string())?;
+    match store.get(&name) {
+        Some(serde_json::Value::String(s)) => Ok(s),
+        _ => Err("Workspace not found".into()),
+    }
+}
+
+/// IPC command: list all saved workspace names
+#[tauri::command]
+async fn list_workspaces(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("workspaces.json").map_err(|e| e.to_string())?;
+    Ok(store.keys().into_iter().collect())
+}
+
 // ── Bot Management IPC Commands ──────────────────────────────────────
 
 /// IPC command: get list of all supported brokers with credential field definitions
@@ -567,6 +689,7 @@ async fn get_bot_log(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -583,6 +706,18 @@ pub fn run() {
             get_bot_status,
             send_notification,
             navigate_to,
+            // Auth token persistence
+            save_auth_token,
+            load_auth_token,
+            clear_auth_token,
+            // Multi-window panels
+            create_panel_window,
+            // Preferences & workspaces
+            save_preference,
+            load_preferences,
+            save_workspace,
+            load_workspace,
+            list_workspaces,
             // Remote worker
             start_worker,
             stop_worker,
@@ -740,13 +875,13 @@ pub fn run() {
                     Optimization and backtest jobs will remain queued until a worker connects.");
             }
 
-            // ── Navigate to auraalpha.cc with live data splash ────
+            // ── Emit EC2 health status to React app (no navigation) ────
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                // Brief delay to let the splash/loading screen render
+                // Brief delay to let the React app render
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-                // Emit live data to splash screen while checking connectivity
+                // Check EC2 connectivity and emit health data for dashboard
                 let client = reqwest::Client::new();
                 match client
                     .get(HEALTH_URL)
@@ -755,27 +890,18 @@ pub fn run() {
                     .await
                 {
                     Ok(resp) if resp.status().is_success() => {
-                        // Parse and emit live data to the splash screen
                         if let Ok(data) = resp.json::<serde_json::Value>().await {
                             if let Some(window) = app_handle.get_webview_window("main") {
                                 let _ = window.emit("ec2-health", &data);
                             }
                         }
-
-                        // Small delay so user sees the live status
-                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            let url: tauri::Url = EC2_API.parse().unwrap();
-                            let _ = window.navigate(url);
-                        }
+                        // React app handles its own routing — no navigation to external site
                     }
                     _ => {
                         // EC2 not reachable — emit offline status
                         if let Some(window) = app_handle.get_webview_window("main") {
                             let _ = window.emit("ec2-health", serde_json::json!({"offline": true}));
                         }
-                        // index.html stays visible with retry button
                     }
                 }
             });

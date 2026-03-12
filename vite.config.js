@@ -10,5 +10,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom'],
+          'motion': ['framer-motion'],
+          'dock': ['rc-dock'],
+          'charts': ['lightweight-charts'],
+        },
+      },
+    },
   },
 });

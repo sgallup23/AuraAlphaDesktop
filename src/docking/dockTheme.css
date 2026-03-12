@@ -1,0 +1,81 @@
+/* rc-dock dark theme for Aura Alpha */
+.dock-layout {
+  --dock-bg: #0D1117;
+  --dock-surface: #161B22;
+  --dock-border: #30363D;
+  --dock-tab-bg: #161B22;
+  --dock-tab-active: #1C2128;
+  --dock-tab-text: #8B949E;
+  --dock-tab-active-text: #E6EDF3;
+  --dock-accent: #58A6FF;
+}
+
+.dock-layout .dock-panel {
+  background: #0D1117;
+  border: 1px solid #30363D;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.dock-layout .dock-tab-bar {
+  background: #161B22;
+  border-bottom: 1px solid #30363D;
+}
+
+.dock-layout .dock-tab {
+  background: transparent;
+  color: #8B949E;
+  border: none;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.dock-layout .dock-tab:hover {
+  color: #E6EDF3;
+}
+
+.dock-layout .dock-tab-active {
+  color: #E6EDF3;
+  border-bottom: 2px solid #58A6FF;
+  background: #1C2128;
+}
+
+.dock-layout .dock-tab-close-btn {
+  color: #484F58;
+  font-size: 14px;
+}
+
+.dock-layout .dock-tab-close-btn:hover {
+  color: #F85149;
+}
+
+.dock-layout .dock-divider {
+  background: #30363D;
+}
+
+.dock-layout .dock-drop-indicator {
+  background: rgba(88, 166, 255, 0.15);
+  border: 2px solid #58A6FF;
+  border-radius: 4px;
+}
+
+.dock-layout .dock-panel .dock-panel-body {
+  background: #0D1117;
+}
+
+/* Panel content padding */
+.dock-layout .dock-panel .panel-content {
+  padding: 12px;
+  height: 100%;
+  overflow: auto;
+}
+
+/* Floating panel shadow */
+.dock-layout .dock-panel.dock-style-float {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+}
