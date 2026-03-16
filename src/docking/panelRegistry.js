@@ -11,6 +11,7 @@ const AlertsPanel = lazy(() => import('../panels/AlertsPanel'));
 const StrategyManagerPanel = lazy(() => import('../panels/StrategyManagerPanel'));
 const BrokerSetupPanel = lazy(() => import('../panels/BrokerSetupPanel'));
 const BotManagerPanel = lazy(() => import('../panels/BotManagerPanel'));
+const BacktestPanel = lazy(() => import('../panels/BacktestPanel'));
 
 export const PANELS = {
   'bot-command':    { id: 'bot-command',    title: 'Bot Command Center', component: BotCommandPanel, closable: true, group: 'main' },
@@ -22,6 +23,7 @@ export const PANELS = {
   'strategies':     { id: 'strategies',     title: 'Strategies',         component: StrategyManagerPanel, closable: true, group: 'main' },
   'broker-setup':   { id: 'broker-setup',   title: 'Broker Setup',       component: BrokerSetupPanel, closable: true, group: 'settings' },
   'bot-manager':    { id: 'bot-manager',    title: 'Bot Manager',        component: BotManagerPanel,  closable: true, group: 'settings' },
+  'backtest':       { id: 'backtest',       title: 'Backtests',          component: BacktestPanel,    closable: true, group: 'main' },
 };
 
 export function getPanelComponent(panelId) {
