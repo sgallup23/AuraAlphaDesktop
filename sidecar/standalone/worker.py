@@ -2,6 +2,11 @@
 StandaloneWorker — main worker loop.
 Connects to coordinator via HTTPS, pulls jobs, executes backtests in parallel,
 reports results. No Redis or shared filesystem needed.
+
+Supported job types:
+  - research_backtest  — Alpha Factory research backtests
+  - strategy_backtest  — production strategy backtests
+  - signal_gen         — signal generation (requires generate_signals executor)
 """
 from __future__ import annotations
 
@@ -14,7 +19,7 @@ import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from threading import Event, Thread
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .api_client import CoordinatorClient
 from .backtest_engine import run_single_research_job
@@ -22,6 +27,80 @@ from .config import WorkerConfig
 from .data_fetcher import DataFetcher
 
 log = logging.getLogger("standalone.worker")
+
+
+# ── Job executors for each type ──────────────────────────────────────────────
+
+
+def _run_strategy_backtest(job_dict: Dict[str, Any], cache_dir) -> Dict[str, Any]:
+    """Execute a production strategy backtest job.
+
+    Uses the same engine as research_backtest — the job payload format is
+    identical.  Separated so future optimisations can diverge.
+    """
+    return run_single_research_job(job_dict, cache_dir)
+
+
+def _run_signal_gen(job_dict: Dict[str, Any], cache_dir) -> Dict[str, Any]:
+    """Execute a signal generation job.
+
+    Expected job_dict fields (beyond the standard ones):
+        strategy_id   str
+        symbols       list[str]
+        region        str
+        parameters    dict
+    """
+    try:
+        job_id = job_dict.get("job_id", "unknown")
+        strategy_id = job_dict.get("strategy_id", "unknown")
+        symbols = job_dict.get("symbols", job_dict.get("symbol_universe", []))
+        region = job_dict.get("region", job_dict.get("backtest_config", {}).get("region", "us"))
+        parameters = job_dict.get("parameters", job_dict.get("parameter_set", {}))
+
+        # Import the lightweight signal generator bundled with the sidecar.
+        # Falls back gracefully if the module isn't present (older installs).
+        try:
+            from .signal_engine import generate_signals  # type: ignore[import-not-found]
+        except ImportError:
+            return {
+                "job_id": job_id,
+                "status": "failed",
+                "error": "signal_engine module not available on this worker",
+            }
+
+        signals = generate_signals(
+            strategy_id=strategy_id,
+            symbols=symbols,
+            region=region,
+            parameters=parameters,
+            cache_dir=cache_dir,
+        )
+
+        return {
+            "job_id": job_id,
+            "status": "completed",
+            "metrics": {
+                "strategy_id": strategy_id,
+                "symbols_processed": len(symbols),
+                "signals_generated": len(signals),
+            },
+            "signals": signals,
+        }
+    except Exception as e:
+        return {
+            "job_id": job_dict.get("job_id", "unknown"),
+            "status": "failed",
+            "error": f"{type(e).__name__}: {e}",
+            "traceback": traceback.format_exc(),
+        }
+
+
+# Registry mapping job_type -> executor function
+_JOB_EXECUTORS: Dict[str, Callable] = {
+    "research_backtest": run_single_research_job,
+    "strategy_backtest": _run_strategy_backtest,
+    "signal_gen": _run_signal_gen,
+}
 
 
 class StandaloneWorker:
@@ -55,12 +134,14 @@ class StandaloneWorker:
     def _capabilities(self) -> Dict[str, Any]:
         """Build capabilities dict for registration."""
         return {
+            "hostname": platform.node(),
             "cpu_count": self.config.cpu_count,
             "ram_gb": self.config.ram_gb,
             "max_parallel": self.config.max_parallel,
-            "os": f"{platform.system()} {platform.release()}",
+            "os_info": f"{platform.system()} {platform.release()}",
+            "supported_job_types": self.config.supported_job_types,
             "python_version": platform.python_version(),
-            "worker_version": "1.0.0",
+            "worker_version": "2.0.0",
         }
 
     def _throughput(self) -> float:
@@ -108,8 +189,20 @@ class StandaloneWorker:
             unique_syms = list(dict.fromkeys(syms))  # preserve order, dedupe
             self.fetcher.ensure_data(unique_syms, region)
 
+    def _resolve_executor(self, job: Dict) -> Callable:
+        """Resolve the executor function for a job based on its type."""
+        job_type = job.get("job_type", "research_backtest")
+        executor = _JOB_EXECUTORS.get(job_type)
+        if executor is None:
+            log.warning("Unknown job_type %r, falling back to research_backtest", job_type)
+            executor = run_single_research_job
+        return executor
+
     def _execute_batch(self, jobs: List[Dict]) -> List[Dict[str, Any]]:
-        """Prefetch data, then run backtests in parallel via ProcessPoolExecutor."""
+        """Prefetch data, then run jobs in parallel via ProcessPoolExecutor.
+
+        Dispatches each job to the appropriate executor based on its job_type.
+        """
         # Prefetch all needed data
         self._prefetch_data(jobs)
 
@@ -124,7 +217,8 @@ class StandaloneWorker:
             # Sequential execution
             for job in jobs:
                 start = time.time()
-                result = run_single_research_job(job, cache_dir)
+                executor_fn = self._resolve_executor(job)
+                result = executor_fn(job, cache_dir)
                 result["execution_time"] = round(time.time() - start, 2)
                 result["worker_id"] = self.config.worker_id
                 results.append(result)
@@ -136,7 +230,8 @@ class StandaloneWorker:
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 future_to_job = {}
                 for job in jobs:
-                    fut = executor.submit(run_single_research_job, job, cache_dir)
+                    executor_fn = self._resolve_executor(job)
+                    fut = executor.submit(executor_fn, job, cache_dir)
                     future_to_job[fut] = job["job_id"]
 
                 timeout = self.config.job_timeout * len(jobs)
@@ -179,14 +274,21 @@ class StandaloneWorker:
     # ── Result Reporting ──────────────────────────────────────────────
 
     def _report_results(self, results: List[Dict]) -> None:
-        """Report completed/failed jobs back to the coordinator."""
+        """Report completed/failed jobs back to the compute grid."""
         for result in results:
             job_id = result.get("job_id", "unknown")
             try:
                 if result.get("status") == "completed":
-                    self.client.complete(job_id, result.get("metrics", {}))
+                    # Build the result payload from metrics + any extra data
+                    result_payload: Dict[str, Any] = {}
+                    if result.get("metrics"):
+                        result_payload["metrics"] = result["metrics"]
+                    if result.get("signals"):
+                        result_payload["signals"] = result["signals"]
+                    compute_seconds = result.get("execution_time", 0.0)
+                    self.client.complete(job_id, result_payload, compute_seconds)
                     self.stats["completed"] += 1
-                    self.stats["total_job_seconds"] += result.get("execution_time", 0)
+                    self.stats["total_job_seconds"] += compute_seconds
                 else:
                     self.client.fail(job_id, result.get("error", "unknown error"))
                     self.stats["failed"] += 1
@@ -210,6 +312,7 @@ class StandaloneWorker:
             self.config.max_parallel,
             self.config.batch_size,
         )
+        log.info("Job types: %s", ", ".join(self.config.supported_job_types))
         log.info("Cache: %s", self.config.cache_dir)
         log.info("=" * 70)
 
@@ -239,8 +342,11 @@ class StandaloneWorker:
 
         while not self._shutdown.is_set():
             try:
-                # Dequeue a batch
-                jobs = self.client.dequeue(count=self.config.batch_size)
+                # Dequeue a batch, filtered to this worker's supported types
+                jobs = self.client.dequeue(
+                    count=self.config.batch_size,
+                    job_types=self.config.supported_job_types,
+                )
 
                 if not jobs:
                     # No work available — back off
