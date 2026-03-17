@@ -1,6 +1,6 @@
 {
   "name": "aura-alpha-desktop",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Aura Alpha Trading Desk — Desktop Application",
   "private": true,
   "type": "module",
@@ -18,7 +18,8 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@vitejs/plugin-react": "^5.1.4",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vite-plugin-singlefile": "^2.3.2"
   },
   "dependencies": {
     "@tailwindcss/forms": "^0.5.11",
