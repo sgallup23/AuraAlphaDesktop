@@ -31,16 +31,14 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = useCallback(async (username, password, remember = true) => {
-    const res = await fetch('https://auraalpha.cc/api/auth/login', {
+    // Use Rust proxy to bypass CORS (Cloudflare blocks tauri://localhost origin)
+    const text = await invoke('api_proxy', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      path: 'https://auraalpha.cc/api/auth/login',
       body: JSON.stringify({ username, password }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || `Login failed (${res.status})`);
-    }
-    const data = await res.json();
+      authToken: null,
+    }).catch(e => { throw new Error(typeof e === 'string' ? e : 'Connection failed'); });
+    const data = JSON.parse(text);
     setToken(data.access_token);
     setUser(data.user || { username });
     if (remember) {
