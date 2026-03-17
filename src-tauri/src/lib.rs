@@ -925,24 +925,12 @@ async fn research_worker_status(
 }
 
 pub fn run() {
-    // Fix WebView2 black screen on Windows — disable GPU compositing
-    // which can fail on some GPU drivers causing a blank/black render
-    #[cfg(target_os = "windows")]
-    {
-        if std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_err() {
-            std::env::set_var(
-                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-                "--disable-gpu-compositing",
-            );
-        }
-    }
-
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // window-state removed — was restoring corrupt position causing black screen
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(WorkerState {

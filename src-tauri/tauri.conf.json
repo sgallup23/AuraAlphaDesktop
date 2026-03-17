@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/v2/core/tauri-config-schema/schema.json",
   "productName": "Aura Alpha",
   "identifier": "cc.auraalpha.desktop",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "build": {
     "frontendDist": "../dist",
     "beforeBuildCommand": "npm run build",
@@ -30,9 +30,8 @@
       "iconAsTemplate": true,
       "tooltip": "Aura Alpha"
     },
-    "security": {
-      "csp": "default-src 'self' https://auraalpha.cc https://*.auraalpha.cc; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://auraalpha.cc; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' https://auraalpha.cc https://*.auraalpha.cc wss://auraalpha.cc wss://*.auraalpha.cc"
-    }
+    "security": {}
+
   },
   "bundle": {
     "active": true,
