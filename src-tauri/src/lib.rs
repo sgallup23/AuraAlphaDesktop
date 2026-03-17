@@ -30,7 +30,7 @@ struct ResearchWorkerState {
 struct ResearchWorkerStatus {
     running: bool,
     pid: Option<u32>,
-    redis_url: Option<String>,
+    coordinator_url: Option<String>,
 }
 
 /// Bot status info returned to the frontend via IPC
@@ -736,7 +736,7 @@ fn find_research_worker_script() -> Option<std::path::PathBuf> {
 }
 
 /// Spawn the research worker sidecar process
-fn spawn_research_worker(redis_url: &str, parallel: u32) -> Result<Child, String> {
+fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result<Child, String> {
     let script = find_research_worker_script()
         .ok_or_else(|| "research_worker.py not found".to_string())?;
 
@@ -768,10 +768,10 @@ fn spawn_research_worker(redis_url: &str, parallel: u32) -> Result<Child, String
 
     Command::new(&python)
         .arg(script.to_string_lossy().as_ref())
-        .arg("--redis-url")
-        .arg(redis_url)
-        .arg("--parallel")
-        .arg(parallel.to_string())
+        .arg("--coordinator-url")
+        .arg(coordinator_url)
+        .arg("--max-parallel")
+        .arg(max_parallel.to_string())
         .stdout(log_file)
         .stderr(log_err)
         .spawn()
@@ -782,8 +782,8 @@ fn spawn_research_worker(redis_url: &str, parallel: u32) -> Result<Child, String
 #[tauri::command]
 async fn start_research_worker(
     state: tauri::State<'_, ResearchWorkerState>,
-    redis_url: Option<String>,
-    parallel: Option<u32>,
+    coordinator_url: Option<String>,
+    max_parallel: Option<u32>,
 ) -> Result<ResearchWorkerStatus, String> {
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
 
@@ -794,7 +794,7 @@ async fn start_research_worker(
                 return Ok(ResearchWorkerStatus {
                     running: true,
                     pid: Some(child.id()),
-                    redis_url: Some(redis_url.unwrap_or_default()),
+                    coordinator_url: Some(coordinator_url.unwrap_or_default()),
                 });
             }
             _ => {
@@ -803,8 +803,8 @@ async fn start_research_worker(
         }
     }
 
-    let url = redis_url.unwrap_or_else(|| "redis://54.172.235.137:6379/0".to_string());
-    let par = parallel.unwrap_or(2);
+    let url = coordinator_url.unwrap_or_else(|| "https://auraalpha.cc".to_string());
+    let par = max_parallel.unwrap_or(2);
 
     let child = spawn_research_worker(&url, par)?;
     let pid = child.id();
@@ -814,7 +814,7 @@ async fn start_research_worker(
     Ok(ResearchWorkerStatus {
         running: true,
         pid: Some(pid),
-        redis_url: Some(url),
+        coordinator_url: Some(url),
     })
 }
 
@@ -834,7 +834,7 @@ async fn stop_research_worker(
     Ok(ResearchWorkerStatus {
         running: false,
         pid: None,
-        redis_url: None,
+        coordinator_url: None,
     })
 }
 
@@ -850,14 +850,14 @@ async fn research_worker_status(
             Ok(None) => Ok(ResearchWorkerStatus {
                 running: true,
                 pid: Some(child.id()),
-                redis_url: None,
+                coordinator_url: None,
             }),
             _ => {
                 *guard = None;
                 Ok(ResearchWorkerStatus {
                     running: false,
                     pid: None,
-                    redis_url: None,
+                    coordinator_url: None,
                 })
             }
         }
@@ -865,7 +865,7 @@ async fn research_worker_status(
         Ok(ResearchWorkerStatus {
             running: false,
             pid: None,
-            redis_url: None,
+            coordinator_url: None,
         })
     }
 }
@@ -1134,8 +1134,8 @@ pub fn run() {
             // ── Auto-start research worker sidecar ─────────────────────
             let research_state = app.state::<ResearchWorkerState>();
             if find_research_worker_script().is_some() {
-                let default_redis = "redis://54.172.235.137:6379/0";
-                match spawn_research_worker(default_redis, 2) {
+                let coordinator_url = "https://auraalpha.cc";
+                match spawn_research_worker(coordinator_url, 2) {
                     Ok(child) => {
                         log::info!(
                             "Auto-started research worker sidecar (PID {})",
