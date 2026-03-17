@@ -925,6 +925,18 @@ async fn research_worker_status(
 }
 
 pub fn run() {
+    // Fix WebView2 black screen on Windows — disable GPU compositing
+    // which can fail on some GPU drivers causing a blank/black render
+    #[cfg(target_os = "windows")]
+    {
+        if std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_err() {
+            std::env::set_var(
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                "--disable-gpu-compositing",
+            );
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
@@ -1206,6 +1218,17 @@ pub fn run() {
                 }
             } else {
                 log::info!("Research worker script not found — sidecar not auto-started.");
+            }
+
+            // ── Safety net: show window after 3s even if JS fails ────
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    if let Some(window) = handle.get_webview_window("main") {
+                        let _ = window.show();
+                    }
+                });
             }
 
             // ── Emit EC2 health status to React app (no navigation) ────
