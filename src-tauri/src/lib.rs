@@ -20,6 +20,19 @@ struct WorkerState {
     child: Mutex<Option<Child>>,
 }
 
+/// Managed state: holds the research worker sidecar child process
+struct ResearchWorkerState {
+    child: Mutex<Option<Child>>,
+}
+
+/// Research worker status info returned to the frontend via IPC
+#[derive(Clone, Serialize)]
+struct ResearchWorkerStatus {
+    running: bool,
+    pid: Option<u32>,
+    redis_url: Option<String>,
+}
+
 /// Bot status info returned to the frontend via IPC
 #[derive(Clone, Serialize)]
 struct BotStatus {
@@ -687,6 +700,176 @@ async fn get_bot_log(
     }
 }
 
+// ── Research Worker Sidecar ───────────────────────────────────────────
+
+/// Find the sidecar script path (relative to the app's resource dir or exe dir)
+fn find_research_worker_script() -> Option<std::path::PathBuf> {
+    // Check next to the executable first (development / packaged)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            // Packaged: sidecar/ lives next to the binary
+            let candidate = exe_dir.join("sidecar").join("research_worker.py");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            // Development: walk up to project root
+            let dev_candidate = exe_dir
+                .ancestors()
+                .find(|p| p.join("sidecar").join("research_worker.py").exists())
+                .map(|p| p.join("sidecar").join("research_worker.py"));
+            if let Some(path) = dev_candidate {
+                return Some(path);
+            }
+        }
+    }
+    // Fallback: check home dir
+    if let Some(home) = dirs::home_dir() {
+        let candidate = home
+            .join("AuraAlphaDesktop")
+            .join("sidecar")
+            .join("research_worker.py");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Spawn the research worker sidecar process
+fn spawn_research_worker(redis_url: &str, parallel: u32) -> Result<Child, String> {
+    let script = find_research_worker_script()
+        .ok_or_else(|| "research_worker.py not found".to_string())?;
+
+    // Find python — prefer project venv, then system
+    let python = if let Some(home) = dirs::home_dir() {
+        let prodesk_venv = home
+            .join("TRADING_DESK")
+            .join("prodesk")
+            .join(".venv")
+            .join("bin")
+            .join("python");
+        if prodesk_venv.exists() {
+            prodesk_venv.to_string_lossy().to_string()
+        } else {
+            "python3".to_string()
+        }
+    } else {
+        "python3".to_string()
+    };
+
+    // Create log directory next to the script
+    let log_dir = script.parent().unwrap().parent().unwrap().join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_file = std::fs::File::create(log_dir.join("research_worker.log"))
+        .map_err(|e| format!("Cannot create log file: {}", e))?;
+    let log_err = log_file
+        .try_clone()
+        .map_err(|e| format!("Cannot clone log file: {}", e))?;
+
+    Command::new(&python)
+        .arg(script.to_string_lossy().as_ref())
+        .arg("--redis-url")
+        .arg(redis_url)
+        .arg("--parallel")
+        .arg(parallel.to_string())
+        .stdout(log_file)
+        .stderr(log_err)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn research worker: {}", e))
+}
+
+/// IPC command: start the research worker sidecar
+#[tauri::command]
+async fn start_research_worker(
+    state: tauri::State<'_, ResearchWorkerState>,
+    redis_url: Option<String>,
+    parallel: Option<u32>,
+) -> Result<ResearchWorkerStatus, String> {
+    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
+
+    // Check if already running
+    if let Some(ref mut child) = *guard {
+        match child.try_wait() {
+            Ok(None) => {
+                return Ok(ResearchWorkerStatus {
+                    running: true,
+                    pid: Some(child.id()),
+                    redis_url: Some(redis_url.unwrap_or_default()),
+                });
+            }
+            _ => {
+                *guard = None;
+            }
+        }
+    }
+
+    let url = redis_url.unwrap_or_else(|| "redis://54.172.235.137:6379/0".to_string());
+    let par = parallel.unwrap_or(2);
+
+    let child = spawn_research_worker(&url, par)?;
+    let pid = child.id();
+    *guard = Some(child);
+
+    log::info!("Research worker started (PID {})", pid);
+    Ok(ResearchWorkerStatus {
+        running: true,
+        pid: Some(pid),
+        redis_url: Some(url),
+    })
+}
+
+/// IPC command: stop the research worker sidecar
+#[tauri::command]
+async fn stop_research_worker(
+    state: tauri::State<'_, ResearchWorkerState>,
+) -> Result<ResearchWorkerStatus, String> {
+    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
+    if let Some(ref mut child) = *guard {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    *guard = None;
+
+    log::info!("Research worker stopped");
+    Ok(ResearchWorkerStatus {
+        running: false,
+        pid: None,
+        redis_url: None,
+    })
+}
+
+/// IPC command: check research worker status
+#[tauri::command]
+async fn research_worker_status(
+    state: tauri::State<'_, ResearchWorkerState>,
+) -> Result<ResearchWorkerStatus, String> {
+    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
+
+    if let Some(ref mut child) = *guard {
+        match child.try_wait() {
+            Ok(None) => Ok(ResearchWorkerStatus {
+                running: true,
+                pid: Some(child.id()),
+                redis_url: None,
+            }),
+            _ => {
+                *guard = None;
+                Ok(ResearchWorkerStatus {
+                    running: false,
+                    pid: None,
+                    redis_url: None,
+                })
+            }
+        }
+    } else {
+        Ok(ResearchWorkerStatus {
+            running: false,
+            pid: None,
+            redis_url: None,
+        })
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -697,6 +880,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(WorkerState {
+            child: Mutex::new(None),
+        })
+        .manage(ResearchWorkerState {
             child: Mutex::new(None),
         })
         .manage(bot_manager::BotManagerState::new())
@@ -733,6 +919,10 @@ pub fn run() {
             get_local_bot_status,
             list_local_bots,
             get_bot_log,
+            // Research worker sidecar
+            start_research_worker,
+            stop_research_worker,
+            research_worker_status,
         ])
         .setup(|app| {
             // ── System tray ──────────────────────────────────────
@@ -740,9 +930,11 @@ pub fn run() {
             let health = MenuItem::with_id(app, "health", "Check Health", true, None::<&str>)?;
             let worker_item =
                 MenuItem::with_id(app, "worker", "Start Worker", true, None::<&str>)?;
+            let research_item =
+                MenuItem::with_id(app, "research", "Research: Start", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
-            let menu = Menu::with_items(app, &[&show, &health, &worker_item, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &health, &worker_item, &research_item, &quit])?;
 
             let _tray = TrayIconBuilder::new()
                 .menu(&menu)
@@ -813,10 +1005,74 @@ pub fn run() {
                             }
                         });
                     }
+                    "research" => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let state = app.state::<ResearchWorkerState>();
+                            // Toggle: check if running via status command
+                            let is_running = match research_worker_status(state.clone()).await {
+                                Ok(s) => s.running,
+                                Err(_) => false,
+                            };
+                            if is_running {
+                                // Stop it
+                                match stop_research_worker(state).await {
+                                    Ok(_) => {
+                                        let _ = send_notification(
+                                            app,
+                                            "Research Worker".to_string(),
+                                            "Research worker stopped".to_string(),
+                                        ).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = send_notification(
+                                            app,
+                                            "Research Worker".to_string(),
+                                            format!("Stop error: {}", e),
+                                        ).await;
+                                    }
+                                }
+                            } else {
+                                // Start it
+                                match start_research_worker(state, None, None).await {
+                                    Ok(rs) if rs.running => {
+                                        let _ = send_notification(
+                                            app,
+                                            "Research Worker".to_string(),
+                                            format!("Research worker started (PID {})", rs.pid.unwrap_or(0)),
+                                        ).await;
+                                    }
+                                    Ok(_) => {
+                                        let _ = send_notification(
+                                            app,
+                                            "Research Worker".to_string(),
+                                            "Research worker failed to start".to_string(),
+                                        ).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = send_notification(
+                                            app,
+                                            "Research Worker".to_string(),
+                                            format!("Error: {}", e),
+                                        ).await;
+                                    }
+                                }
+                            }
+                        });
+                    }
                     "quit" => {
                         // Kill worker on quit
                         let state = app.state::<WorkerState>();
                         if let Ok(mut guard) = state.child.lock() {
+                            if let Some(ref mut child) = *guard {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                            }
+                            *guard = None;
+                        }
+                        // Kill research worker on quit
+                        let research_state = app.state::<ResearchWorkerState>();
+                        if let Ok(mut guard) = research_state.child.lock() {
                             if let Some(ref mut child) = *guard {
                                 let _ = child.kill();
                                 let _ = child.wait();
@@ -873,6 +1129,28 @@ pub fn run() {
             } else {
                 log::info!("No project directory found — worker not auto-started. \
                     Optimization and backtest jobs will remain queued until a worker connects.");
+            }
+
+            // ── Auto-start research worker sidecar ─────────────────────
+            let research_state = app.state::<ResearchWorkerState>();
+            if find_research_worker_script().is_some() {
+                let default_redis = "redis://54.172.235.137:6379/0";
+                match spawn_research_worker(default_redis, 2) {
+                    Ok(child) => {
+                        log::info!(
+                            "Auto-started research worker sidecar (PID {})",
+                            child.id()
+                        );
+                        if let Ok(mut guard) = research_state.child.lock() {
+                            *guard = Some(child);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Could not auto-start research worker: {}", e);
+                    }
+                }
+            } else {
+                log::info!("Research worker script not found — sidecar not auto-started.");
             }
 
             // ── Emit EC2 health status to React app (no navigation) ────
