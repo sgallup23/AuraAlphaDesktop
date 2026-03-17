@@ -1219,34 +1219,28 @@ pub fn run() {
                 });
             }
 
-            // ── Emit EC2 health status to React app (no navigation) ────
+            // ── Navigate to auraalpha.cc (local React build is offline fallback) ────
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                // Brief delay to let the React app render
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                // Brief delay to let the local HTML splash render
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-                // Check EC2 connectivity and emit health data for dashboard
                 let client = reqwest::Client::new();
-                match client
+                let reachable = client
                     .get(HEALTH_URL)
-                    .timeout(std::time::Duration::from_secs(8))
+                    .timeout(std::time::Duration::from_secs(5))
                     .send()
                     .await
-                {
-                    Ok(resp) if resp.status().is_success() => {
-                        if let Ok(data) = resp.json::<serde_json::Value>().await {
-                            if let Some(window) = app_handle.get_webview_window("main") {
-                                let _ = window.emit("ec2-health", &data);
-                            }
-                        }
-                        // React app handles its own routing — no navigation to external site
+                    .map(|r| r.status().is_success())
+                    .unwrap_or(false);
+
+                if reachable {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let url: tauri::Url = "https://auraalpha.cc".parse().unwrap();
+                        let _ = window.navigate(url);
                     }
-                    _ => {
-                        // EC2 not reachable — emit offline status
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            let _ = window.emit("ec2-health", serde_json::json!({"offline": true}));
-                        }
-                    }
+                }
+                // If not reachable, the local singlefile HTML stays visible
                 }
             });
 
