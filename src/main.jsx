@@ -6,10 +6,5 @@ import App from './App';
 const preload = document.getElementById('preload');
 if (preload) preload.remove();
 
-// Show the window now that web content is ready (window starts hidden to avoid black flash)
-import('@tauri-apps/api/window')
-  .then(({ getCurrentWindow }) => getCurrentWindow().show())
-  .catch(() => {}); // silently fail in dev/non-Tauri context
-
 const root = createRoot(document.getElementById('root'));
 root.render(<App />);
