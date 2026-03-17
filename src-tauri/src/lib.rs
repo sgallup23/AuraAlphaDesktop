@@ -1241,7 +1241,6 @@ pub fn run() {
                     }
                 }
                 // If not reachable, the local singlefile HTML stays visible
-                }
             });
 
             Ok(())
