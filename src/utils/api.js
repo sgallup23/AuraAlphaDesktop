@@ -43,13 +43,13 @@ async function tryRefreshToken() {
   refreshPromise = (async () => {
     const rt = await getRefreshToken();
     if (!rt) throw new Error('No refresh token');
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
+    const text = await invoke('api_proxy', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      path: '/api/auth/refresh',
       body: JSON.stringify({ refresh_token: rt }),
+      authToken: null,
     });
-    if (!res.ok) throw new Error('Refresh failed');
-    const data = await res.json();
+    const data = JSON.parse(text);
     await setTokens(data.access_token, data.refresh_token || rt, data.user || '{}');
     return data.access_token;
   })();
@@ -60,10 +60,75 @@ async function tryRefreshToken() {
   }
 }
 
+/**
+ * Core API function — routes through Rust reqwest to bypass CORS/Cloudflare.
+ * Falls back to browser fetch if Tauri IPC is unavailable (dev mode).
+ */
 export async function api(path, options = {}) {
   const { silent = false, signal, method, headers: extraHeaders, body, ...rest } = options;
   const token = await getToken();
   const url = path.startsWith('http') ? path : `${API_BASE}${path.startsWith('/') ? '' : '/'}${path}`;
+
+  // Use Rust-side proxy (bypasses browser CORS / Cloudflare caching)
+  const useProxy = !!window.__TAURI_INTERNALS__;
+
+  if (useProxy) {
+    try {
+      const m = method || (body ? 'POST' : 'GET');
+      const b = body
+        ? typeof body === 'string' || body instanceof FormData
+          ? body
+          : JSON.stringify(body)
+        : null;
+      let text = await invoke('api_proxy', {
+        method: m,
+        path: url,
+        body: b,
+        authToken: token || null,
+      });
+      // Handle 401 → refresh
+      if (!text && token) {
+        try {
+          const newToken = await tryRefreshToken();
+          text = await invoke('api_proxy', {
+            method: m,
+            path: url,
+            body: b,
+            authToken: newToken,
+          });
+        } catch {
+          if (!silent) window.dispatchEvent(new CustomEvent('auth:logout'));
+          return null;
+        }
+      }
+      try { return JSON.parse(text); } catch { return text; }
+    } catch (e) {
+      // If Rust proxy returns an error string starting with "API 401"
+      if (typeof e === 'string' && e.startsWith('API 401') && token) {
+        try {
+          const newToken = await tryRefreshToken();
+          const m = method || (body ? 'POST' : 'GET');
+          const b = body
+            ? typeof body === 'string' ? body : JSON.stringify(body)
+            : null;
+          const text = await invoke('api_proxy', {
+            method: m,
+            path: url,
+            body: b,
+            authToken: newToken,
+          });
+          try { return JSON.parse(text); } catch { return text; }
+        } catch {
+          if (!silent) window.dispatchEvent(new CustomEvent('auth:logout'));
+          return null;
+        }
+      }
+      if (silent) return null;
+      throw e;
+    }
+  }
+
+  // Fallback: browser fetch (dev mode without Tauri)
   const headers = { ...extraHeaders };
   if (token) headers['Authorization'] = `Bearer ${token}`;
   if (body && typeof body === 'object' && !(body instanceof FormData)) {
