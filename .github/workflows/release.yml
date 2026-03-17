@@ -71,6 +71,32 @@ jobs:
             - Windows: `.msi` or `.exe` (NSIS installer)
             - macOS: `.dmg`
             - Linux: `.deb` or `.AppImage`
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
+          includeUpdaterJson: false
           args: --target ${{ matrix.target }}
+
+      # Upload .sig files that tauri-action misses
+      - name: Upload updater signatures
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+
+          # Find all .sig files in the bundle output
+          find "$BUNDLE_DIR" -name "*.sig" -type f 2>/dev/null | while read sig; do
+            name=$(basename "$sig")
+            echo "Uploading signature: $name"
+            gh release upload "$TAG" "$sig" --clobber || echo "Warning: failed to upload $name"
+          done
+
+          # Also upload updater bundles (.tar.gz, .nsis.zip) if not already uploaded
+          for ext in tar.gz nsis.zip; do
+            find "$BUNDLE_DIR" -name "*.$ext" -not -name "*.sig" -type f 2>/dev/null | while read bundle; do
+              name=$(basename "$bundle")
+              echo "Uploading updater bundle: $name"
+              gh release upload "$TAG" "$bundle" --clobber || echo "Warning: failed to upload $name (may already exist)"
+            done
+          done
