@@ -55,19 +55,43 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build Tauri app
+      # macOS code signing: only pass cert env vars when secret is actually set
+      # (empty APPLE_CERTIFICATE causes tauri-action to fail on keychain import)
+      - name: Build Tauri app (signed)
+        if: matrix.platform == 'macos-latest' && secrets.APPLE_CERTIFICATE != ''
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code signing + notarization (Gatekeeper won't block the app)
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Aura Alpha Desktop ${{ github.ref_name }}'
+          releaseBody: |
+            Desktop application for Aura Alpha Trading Desk.
+
+            **Downloads:**
+            - Windows: `.msi` or `.exe` (NSIS installer)
+            - macOS: `.dmg` (signed + notarized)
+            - Linux: `.deb` or `.AppImage`
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: false
+          args: --target ${{ matrix.target }}
+
+      - name: Build Tauri app (unsigned)
+        if: matrix.platform != 'macos-latest' || secrets.APPLE_CERTIFICATE == ''
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Aura Alpha Desktop ${{ github.ref_name }}'
