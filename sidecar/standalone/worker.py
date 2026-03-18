@@ -60,31 +60,14 @@ class StandaloneWorker:
     def _capabilities(self) -> Dict[str, Any]:
         """Build capabilities dict for registration."""
         return {
-            "hostname": self._device_name(),
+            "hostname": platform.node() or "unknown",
             "cpu_count": self.config.cpu_count,
             "ram_gb": self.config.ram_gb,
             "max_parallel": self.config.max_parallel,
             "os": f"{platform.system()} {platform.release()}",
             "python_version": platform.python_version(),
-            "worker_version": "1.0.0",
+            "worker_version": "2.0.0",
         }
-
-    @staticmethod
-    def _device_name() -> str:
-        """Get human-friendly device name for the leaderboard."""
-        import subprocess
-        system = platform.system()
-        if system == "Darwin":
-            try:
-                r = subprocess.run(["scutil", "--get", "ComputerName"],
-                                   capture_output=True, text=True, timeout=5)
-                if r.returncode == 0 and r.stdout.strip():
-                    return r.stdout.strip()
-            except Exception:
-                pass
-        elif system == "Windows":
-            return os.environ.get("COMPUTERNAME", platform.node())
-        return platform.node().split(".")[0]
 
     def _throughput(self) -> float:
         """Jobs per minute since start."""
