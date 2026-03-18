@@ -16,6 +16,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError a
 from threading import Event, Thread
 from typing import Any, Dict, List, Optional
 
+from .adaptive_throttle import AdaptiveThrottle
 from .api_client import CoordinatorClient
 from .backtest_engine import run_single_research_job
 from .config import WorkerConfig
@@ -43,6 +44,9 @@ class StandaloneWorker:
         self._active_job_ids: List[str] = []
         self._heartbeat_thread: Optional[Thread] = None
 
+        # Adaptive throttle — yields to games, apps, etc.
+        self.throttle = AdaptiveThrottle(max_parallel=config.max_parallel)
+
         # Stats
         self.stats = {
             "completed": 0,
@@ -67,30 +71,20 @@ class StandaloneWorker:
 
     @staticmethod
     def _device_name() -> str:
-        """Get a human-friendly device name for the leaderboard.
-        Returns the actual computer name (e.g. 'Shawn's MacBook Pro', 'TRADING-DESK').
-        """
+        """Get human-friendly device name for the leaderboard."""
         import subprocess
         system = platform.system()
-        # macOS: use ComputerName (the friendly name from System Settings)
         if system == "Darwin":
             try:
-                result = subprocess.run(
-                    ["scutil", "--get", "ComputerName"],
-                    capture_output=True, text=True, timeout=5)
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout.strip()
+                r = subprocess.run(["scutil", "--get", "ComputerName"],
+                                   capture_output=True, text=True, timeout=5)
+                if r.returncode == 0 and r.stdout.strip():
+                    return r.stdout.strip()
             except Exception:
                 pass
-        # Windows: use COMPUTERNAME env var or hostname
         elif system == "Windows":
-            name = os.environ.get("COMPUTERNAME") or platform.node()
-            return name
-        # Linux/WSL: check /etc/hostname or platform.node()
-        try:
-            return platform.node().split(".")[0]
-        except Exception:
-            return "Unknown Device"
+            return os.environ.get("COMPUTERNAME", platform.node())
+        return platform.node().split(".")[0]
 
     def _throughput(self) -> float:
         """Jobs per minute since start."""
@@ -146,7 +140,8 @@ class StandaloneWorker:
         self._active_job_ids = [j["job_id"] for j in jobs]
 
         results: List[Dict[str, Any]] = []
-        max_workers = min(self.config.max_parallel, len(jobs))
+        # Ask throttle how many workers we can use right now
+        max_workers = min(self.throttle.recommended_workers(), len(jobs))
         cache_dir = self.config.cache_dir
 
         if max_workers <= 1 or len(jobs) == 1:
@@ -240,6 +235,7 @@ class StandaloneWorker:
             self.config.batch_size,
         )
         log.info("Cache: %s", self.config.cache_dir)
+        log.info("Adaptive throttle: ON (yields to games, apps, heavy processes)")
         log.info("=" * 70)
 
         # Graceful shutdown handlers
@@ -268,8 +264,22 @@ class StandaloneWorker:
 
         while not self._shutdown.is_set():
             try:
+                # Check throttle — scale batch size with available capacity
+                recommended = self.throttle.recommended_workers()
+                batch_count = self.config.batch_size
+                if recommended < self.config.max_parallel:
+                    # Throttled — pull fewer jobs proportionally
+                    ratio = recommended / max(self.config.max_parallel, 1)
+                    batch_count = max(1, int(self.config.batch_size * ratio))
+
+                    # If heavily throttled (<25% capacity), add a cooldown
+                    if ratio <= 0.25:
+                        self._shutdown.wait(timeout=5)
+                        if self._shutdown.is_set():
+                            break
+
                 # Dequeue a batch
-                jobs = self.client.dequeue(count=self.config.batch_size)
+                jobs = self.client.dequeue(count=batch_count)
 
                 if not jobs:
                     # No work available — back off
@@ -280,7 +290,8 @@ class StandaloneWorker:
 
                 # Reset backoff on successful dequeue
                 idle_backoff = 1
-                log.info("Dequeued %d jobs", len(jobs))
+                throttle_tag = f" [throttled {recommended}/{self.config.max_parallel}]" if self.throttle.is_throttled else ""
+                log.info("Dequeued %d jobs%s", len(jobs), throttle_tag)
 
                 # Execute batch
                 batch_start = time.time()
@@ -293,8 +304,8 @@ class StandaloneWorker:
                 completed = sum(1 for r in results if r.get("status") == "completed")
                 failed = len(results) - completed
                 log.info(
-                    "Batch done: %d completed, %d failed in %.1fs (%.1f jobs/min total)",
-                    completed, failed, batch_elapsed, self._throughput(),
+                    "Batch done: %d completed, %d failed in %.1fs (%.1f jobs/min total)%s",
+                    completed, failed, batch_elapsed, self._throughput(), throttle_tag,
                 )
 
             except KeyboardInterrupt:
