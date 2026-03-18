@@ -93,7 +93,18 @@ def resolve_token(coordinator_url: str, auth_token: str = "") -> str:
         import urllib.request
         import urllib.error
 
+        # Get friendly device name (macOS ComputerName, Windows COMPUTERNAME, Linux hostname)
         hostname = platform.node()
+        if platform.system() == "Darwin":
+            try:
+                import subprocess as _sp
+                _r = _sp.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True, timeout=5)
+                if _r.returncode == 0 and _r.stdout.strip():
+                    hostname = _r.stdout.strip()
+            except Exception:
+                pass
+        elif platform.system() == "Windows":
+            hostname = os.environ.get("COMPUTERNAME", hostname)
         payload = json.dumps({
             "auth_token": auth_token or "desktop-auto",
             "hostname": hostname,

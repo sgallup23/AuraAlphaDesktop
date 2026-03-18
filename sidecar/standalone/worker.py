@@ -56,6 +56,7 @@ class StandaloneWorker:
     def _capabilities(self) -> Dict[str, Any]:
         """Build capabilities dict for registration."""
         return {
+            "hostname": self._device_name(),
             "cpu_count": self.config.cpu_count,
             "ram_gb": self.config.ram_gb,
             "max_parallel": self.config.max_parallel,
@@ -63,6 +64,33 @@ class StandaloneWorker:
             "python_version": platform.python_version(),
             "worker_version": "1.0.0",
         }
+
+    @staticmethod
+    def _device_name() -> str:
+        """Get a human-friendly device name for the leaderboard.
+        Returns the actual computer name (e.g. 'Shawn's MacBook Pro', 'TRADING-DESK').
+        """
+        import subprocess
+        system = platform.system()
+        # macOS: use ComputerName (the friendly name from System Settings)
+        if system == "Darwin":
+            try:
+                result = subprocess.run(
+                    ["scutil", "--get", "ComputerName"],
+                    capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
+            except Exception:
+                pass
+        # Windows: use COMPUTERNAME env var or hostname
+        elif system == "Windows":
+            name = os.environ.get("COMPUTERNAME") or platform.node()
+            return name
+        # Linux/WSL: check /etc/hostname or platform.node()
+        try:
+            return platform.node().split(".")[0]
+        except Exception:
+            return "Unknown Device"
 
     def _throughput(self) -> float:
         """Jobs per minute since start."""
