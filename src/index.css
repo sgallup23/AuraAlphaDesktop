@@ -19,7 +19,14 @@
 @layer components {
   .glass-panel {
     @apply bg-aura-surface border border-aura-border rounded-lg;
+    -webkit-backdrop-filter: blur(16px);
     backdrop-filter: blur(16px);
+  }
+  /* Fallback for older WebKit that doesn't support backdrop-filter */
+  @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+    .glass-panel {
+      background: rgba(22, 27, 34, 0.97);
+    }
   }
   .btn-primary {
     @apply px-5 py-2.5 bg-aura-blue text-white rounded-lg font-semibold text-sm transition-opacity hover:opacity-90 disabled:opacity-50;

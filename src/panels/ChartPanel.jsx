@@ -27,9 +27,13 @@ export default function ChartPanel() {
     });
   };
 
+  const [chartError, setChartError] = useState(null);
+
   useEffect(() => {
     if (!containerRef.current) return;
-    const chart = createChart(containerRef.current, {
+    let chart;
+    try {
+      chart = createChart(containerRef.current, {
       layout: { background: { color: '#0D1117' }, textColor: '#8B949E', fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 11 },
       grid: { vertLines: { color: '#1C2128' }, horzLines: { color: '#1C2128' } },
       crosshair: { mode: 0, vertLine: { color: '#58A6FF', width: 1, style: 2, labelBackgroundColor: '#161B22' }, horzLine: { color: '#58A6FF', width: 1, style: 2, labelBackgroundColor: '#161B22' } },
@@ -68,6 +72,10 @@ export default function ChartPanel() {
       ro.disconnect();
       chart.remove();
     };
+    } catch (err) {
+      console.error('Chart init failed:', err);
+      setChartError(String(err));
+    }
   }, []);
 
   useEffect(() => { loadChart(symbol, timeframe); }, [symbol, timeframe]);
@@ -117,7 +125,16 @@ export default function ChartPanel() {
         ))}
       </div>
       {/* Chart */}
-      <div ref={containerRef} className="flex-1 min-h-0" />
+      {chartError ? (
+        <div className="flex-1 flex items-center justify-center text-aura-muted text-sm">
+          <div className="text-center">
+            <p className="mb-1">Chart unavailable on this device</p>
+            <p className="text-xs text-aura-muted/60">WebGL not supported: {chartError}</p>
+          </div>
+        </div>
+      ) : (
+        <div ref={containerRef} className="flex-1 min-h-0" />
+      )}
     </div>
   );
 }
