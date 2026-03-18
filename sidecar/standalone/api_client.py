@@ -1,6 +1,6 @@
 """
-HTTP client for the compute grid API at /api/compute-grid/*.
-All calls include worker token and worker ID headers.
+HTTP client for the coordinator API at /api/cluster/contributor/*.
+All calls include contributor token and worker ID headers.
 Retry logic with exponential backoff.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ BACKOFF_BASE = 1  # seconds: 1, 2, 4
 
 
 class CoordinatorClient:
-    """Thin HTTP wrapper around the compute grid API."""
+    """Thin HTTP wrapper around the coordinator contributor API."""
 
     def __init__(self, coordinator_url: str, token: str, worker_id: str):
         self.base_url = coordinator_url.rstrip("/")
@@ -28,7 +28,7 @@ class CoordinatorClient:
         self.worker_id = worker_id
         self.session = requests.Session()
         self.session.headers.update({
-            "X-Worker-Token": self.token,
+            "X-Contributor-Token": self.token,
             "X-Worker-Id": self.worker_id,
             "Content-Type": "application/json",
         })
@@ -38,7 +38,7 @@ class CoordinatorClient:
     # ── Internal helpers ───────────────────────────────────────────────
 
     def _url(self, path: str) -> str:
-        return f"{self.base_url}/api/compute-grid/{path.lstrip('/')}"
+        return f"{self.base_url}/api/cluster/contributor/{path.lstrip('/')}"
 
     def _request(
         self,
@@ -97,54 +97,36 @@ class CoordinatorClient:
         return resp.json()
 
     def register(self, capabilities: Dict[str, Any]) -> Dict[str, Any]:
-        """Register this worker with the compute grid.
+        """Register this worker with the coordinator.
 
-        capabilities should include: hostname, cpu_count, ram_gb, os_info,
-        max_parallel, supported_job_types
+        capabilities should include: hostname, cpus, ram_gb, os, max_parallel
         """
         resp = self._request("POST", "register", json={
-            "worker_id": self.worker_id,
             "hostname": capabilities.get("hostname", self.worker_id),
-            "cpu_count": capabilities.get("cpu_count", 1),
+            "cpus": capabilities.get("cpu_count", capabilities.get("cpus", 1)),
             "ram_gb": capabilities.get("ram_gb", 0),
+            "os": capabilities.get("os", "unknown"),
             "max_parallel": capabilities.get("max_parallel", 1),
-            "os_info": capabilities.get("os_info", "unknown"),
-            "supported_job_types": capabilities.get("supported_job_types", ["research_backtest"]),
         })
         return resp.json()
 
-    def dequeue(
-        self, count: int = 5, job_types: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
-        """Request a batch of jobs from the compute grid.
-
-        Args:
-            count: Maximum number of jobs to dequeue.
-            job_types: Filter to only these job types. If None, accepts all types.
+    def dequeue(self, count: int = 5) -> List[Dict[str, Any]]:
+        """Request a batch of jobs from the coordinator.
 
         Returns list of job dicts, possibly empty if no work available.
         """
-        body: Dict[str, Any] = {"count": count}
-        if job_types:
-            body["job_types"] = job_types
-        resp = self._request("POST", "dequeue", json=body)
+        resp = self._request("POST", "dequeue", json={
+            "worker_id": self.worker_id,
+            "count": count,
+        })
         data = resp.json()
         return data.get("jobs", [])
 
-    def complete(
-        self, job_id: str, result: Dict[str, Any], compute_seconds: float = 0.0,
-    ) -> Dict[str, Any]:
-        """Report a successfully completed job.
-
-        Args:
-            job_id: The job identifier.
-            result: Job result payload (metrics, output, etc.).
-            compute_seconds: Wall-clock seconds spent on compute.
-        """
+    def complete(self, job_id: str, metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """Report a successfully completed job."""
         resp = self._request("POST", "complete", json={
             "job_id": job_id,
-            "result": result,
-            "compute_seconds": round(compute_seconds, 2),
+            "metrics": metrics,
         })
         return resp.json()
 
@@ -159,12 +141,13 @@ class CoordinatorClient:
     def heartbeat(self, job_ids: List[str]) -> Dict[str, Any]:
         """Send heartbeat for active jobs to extend leases."""
         resp = self._request("POST", "heartbeat", json={
+            "worker_id": self.worker_id,
             "job_ids": job_ids,
         })
         return resp.json()
 
     def download_data(self, region: str, symbol: str, dest_path: Path) -> bool:
-        """Download a parquet file from the compute grid.
+        """Download a parquet file from the coordinator.
 
         Streams the response to dest_path. Returns True on success.
         """
@@ -186,6 +169,6 @@ class CoordinatorClient:
             return False
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get compute grid stats from the coordinator."""
+        """Get cluster/worker stats from the coordinator."""
         resp = self._request("GET", "stats")
         return resp.json()

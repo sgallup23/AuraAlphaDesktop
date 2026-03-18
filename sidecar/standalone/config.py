@@ -8,7 +8,7 @@ import platform
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import psutil
 import yaml
@@ -54,11 +54,6 @@ class WorkerConfig:
     heartbeat_interval: int = 30  # seconds
     job_timeout: int = 600  # seconds per job
 
-    # ── Job types ──────────────────────────────────────────────────────
-    supported_job_types: List[str] = field(
-        default_factory=lambda: ["research_backtest", "strategy_backtest"],
-    )
-
     # ── Detected hardware ──────────────────────────────────────────────
     cpu_count: int = field(default_factory=lambda: os.cpu_count() or 1)
     ram_gb: float = field(default_factory=_auto_ram_gb)
@@ -97,7 +92,7 @@ class WorkerConfig:
                 for key in (
                     "coordinator_url", "token", "worker_id", "max_parallel",
                     "batch_size", "cache_dir", "log_dir", "heartbeat_interval",
-                    "job_timeout", "supported_job_types",
+                    "job_timeout",
                 ):
                     if key in data:
                         kwargs[key] = data[key]
@@ -110,16 +105,12 @@ class WorkerConfig:
             "AURA_TOKEN": "token",
             "AURA_WORKER_ID": "worker_id",
             "AURA_MAX_PARALLEL": "max_parallel",
-            "AURA_JOB_TYPES": "supported_job_types",
         }
         for env_key, config_key in env_map.items():
             val = os.environ.get(env_key)
             if val is not None:
                 if config_key == "max_parallel":
                     kwargs[config_key] = int(val)
-                elif config_key == "supported_job_types":
-                    # Comma-separated: "research_backtest,strategy_backtest,signal_gen"
-                    kwargs[config_key] = [t.strip() for t in val.split(",") if t.strip()]
                 else:
                     kwargs[config_key] = val
 
