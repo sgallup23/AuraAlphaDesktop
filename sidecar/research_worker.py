@@ -80,12 +80,35 @@ def resolve_token(coordinator_url: str, auth_token: str = "") -> str:
         except Exception:
             pass
 
-    # 2. Check token file
+    # 2. Check token file — validate it still works before trusting it
     if TOKEN_FILE.exists():
         token = TOKEN_FILE.read_text().strip()
         if token:
-            log.info("Token loaded from token file")
-            return token
+            # Quick validation: try a heartbeat to see if the server knows this token
+            try:
+                import urllib.request
+                import urllib.error
+                vurl = f"{coordinator_url.rstrip('/')}/api/cluster/contributor/heartbeat"
+                vreq = urllib.request.Request(vurl, method="POST",
+                    data=json.dumps({"job_ids": []}).encode(),
+                    headers={"Content-Type": "application/json",
+                             "X-Contributor-Token": token})
+                with urllib.request.urlopen(vreq, timeout=10):
+                    pass
+                log.info("Token loaded from token file (validated)")
+                return token
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403, 404):
+                    log.warning("Saved token is invalid (HTTP %d) — will re-provision", e.code)
+                    TOKEN_FILE.unlink(missing_ok=True)
+                else:
+                    # Server error / other — trust the token for now
+                    log.info("Token loaded from token file (server returned %d, trusting)", e.code)
+                    return token
+            except Exception:
+                # Network error — trust the saved token
+                log.info("Token loaded from token file (offline, trusting)")
+                return token
 
     # 3. Auto-provision via API
     log.info("No existing token found — auto-provisioning from coordinator...")
