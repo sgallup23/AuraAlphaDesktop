@@ -91,7 +91,7 @@ jobs:
             - Linux: `.deb` or `.AppImage`
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: false
+          includeUpdaterJson: true
           args: --target ${{ matrix.target }}
 
       # To enable Windows code signing:
