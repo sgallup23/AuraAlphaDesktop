@@ -22,7 +22,8 @@
         "decorations": true,
         "resizable": true,
         "fullscreen": false,
-        "transparent": false
+        "transparent": false,
+        "backgroundColor": "#0D1117"
       }
     ],
     "trayIcon": {
