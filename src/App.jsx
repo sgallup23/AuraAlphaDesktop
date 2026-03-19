@@ -10,16 +10,33 @@ class ErrorBoundary extends Component {
   static getDerivedStateFromError(error) { return { error }; }
   render() {
     if (this.state.error) {
+      const resetApp = async () => {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('clear_auth_token').catch(() => {});
+          await invoke('save_workspace', { name: 'default', layoutJson: '{}' }).catch(() => {});
+        } catch {}
+        localStorage.clear();
+        sessionStorage.clear();
+        this.setState({ error: null });
+        window.location.reload();
+      };
       return (
         <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0D1117', color: '#E6EDF3', fontFamily: 'system-ui, sans-serif' }}>
           <div style={{ textAlign: 'center', maxWidth: 480, padding: 32 }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>⚠</div>
             <h2 style={{ fontSize: 18, marginBottom: 8 }}>Something went wrong</h2>
             <p style={{ color: '#8B949E', fontSize: 13, marginBottom: 16 }}>{String(this.state.error)}</p>
-            <button onClick={() => { this.setState({ error: null }); window.location.reload(); }}
-              style={{ padding: '8px 20px', background: '#58A6FF', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
-              Reload
-            </button>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+              <button onClick={() => { this.setState({ error: null }); window.location.reload(); }}
+                style={{ padding: '8px 20px', background: '#58A6FF', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
+                Reload
+              </button>
+              <button onClick={resetApp}
+                style={{ padding: '8px 20px', background: '#F85149', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
+                Reset App
+              </button>
+            </div>
           </div>
         </div>
       );
