@@ -56,7 +56,8 @@ export default function WorkspaceShell() {
       const layout = JSON.parse(json);
       dockRef.current?.loadLayout(layout);
     } catch (e) {
-      console.warn('Failed to load workspace:', e);
+      console.warn('Failed to load workspace, falling back to default:', e);
+      dockRef.current?.loadLayout(DEFAULT_LAYOUT);
     }
   }, []);
 
