@@ -61,13 +61,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS signing — uncomment after running scripts/setup-macos-signing.sh
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS code signing and notarization (active when secrets are set)
+          # To enable macOS signing and notarization:
+          # 1. Run scripts/setup-macos-signing.sh to export your Developer ID certificate
+          # 2. Base64 encode it: base64 -i certificate.p12 | pbcopy
+          # 3. Add GitHub Secrets:
+          #    APPLE_CERTIFICATE = <base64 of .p12 file>
+          #    APPLE_CERTIFICATE_PASSWORD = <p12 password>
+          #    APPLE_SIGNING_IDENTITY = "Developer ID Application: Your Name (TEAMID)"
+          #    APPLE_ID = <your Apple ID email>
+          #    APPLE_PASSWORD = <app-specific password from appleid.apple.com>
+          #    APPLE_TEAM_ID = <10-char team ID from developer.apple.com>
+          # The tauri-action will auto-sign and notarize when these are present.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Aura Alpha Desktop ${{ github.ref_name }}'
@@ -82,6 +93,38 @@ jobs:
           prerelease: false
           includeUpdaterJson: false
           args: --target ${{ matrix.target }}
+
+      # To enable Windows code signing:
+      # 1. Buy an OV or EV code signing certificate (.pfx file)
+      # 2. Base64 encode it: base64 -i certificate.pfx | pbcopy
+      # 3. Add as GitHub Secret: WINDOWS_CERTIFICATE = <base64 string>
+      # 4. Add as GitHub Secret: WINDOWS_CERTIFICATE_PASSWORD = <pfx password>
+      # The build will auto-sign when these secrets are present.
+      - name: Sign Windows executables
+        if: matrix.platform == 'windows-latest' && env.WINDOWS_CERTIFICATE != ''
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        shell: powershell
+        run: |
+          # Decode certificate from base64
+          $certBytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          $certPath = Join-Path $env:TEMP "code_signing.pfx"
+          [IO.File]::WriteAllBytes($certPath, $certBytes)
+
+          # Find and sign all .exe and .msi files in the output
+          $artifacts = Get-ChildItem -Path "src-tauri/target" -Recurse -Include "*.exe","*.msi" | Where-Object { $_.Length -gt 100000 }
+
+          foreach ($file in $artifacts) {
+            Write-Host "Signing: $($file.FullName)"
+            & signtool.exe sign /f $certPath /p $env:WINDOWS_CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 "$($file.FullName)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Warning "Failed to sign $($file.Name) - continuing..."
+            }
+          }
+
+          # Clean up
+          Remove-Item $certPath -Force
 
       # Upload .sig files that tauri-action misses
       - name: Upload updater signatures
