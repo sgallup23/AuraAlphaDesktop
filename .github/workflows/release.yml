@@ -84,6 +84,62 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target ${{ matrix.target }}
 
+      - name: Create updater bundles and sign
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          UPDATER_DIR="updater-artifacts"
+          mkdir -p "$UPDATER_DIR"
+
+          # Install tauri-cli for signing
+          cargo install tauri-cli --version "^2" 2>/dev/null || true
+
+          # macOS: create .app.tar.gz and sign it
+          if [ -d "$BUNDLE_DIR/macos" ]; then
+            APP=$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app" -type d | head -1)
+            if [ -n "$APP" ]; then
+              TARBALL="$UPDATER_DIR/$(basename "$APP").tar.gz"
+              echo "Creating macOS updater bundle: $TARBALL"
+              tar -czf "$TARBALL" -C "$(dirname "$APP")" "$(basename "$APP")"
+              if command -v cargo-tauri &>/dev/null; then
+                cargo tauri signer sign "$TARBALL" 2>/dev/null || true
+              fi
+            fi
+          fi
+
+          # Linux: create .AppImage.tar.gz and sign it
+          APPIMAGE=$(find "$BUNDLE_DIR" -maxdepth 2 -name "*.AppImage" -type f 2>/dev/null | head -1)
+          if [ -n "$APPIMAGE" ]; then
+            TARBALL="$UPDATER_DIR/$(basename "$APPIMAGE").tar.gz"
+            echo "Creating Linux updater bundle: $TARBALL"
+            tar -czf "$TARBALL" -C "$(dirname "$APPIMAGE")" "$(basename "$APPIMAGE")"
+            if command -v cargo-tauri &>/dev/null; then
+              cargo tauri signer sign "$TARBALL" 2>/dev/null || true
+            fi
+          fi
+
+          # Windows: create .nsis.zip and sign it
+          NSIS=$(find "$BUNDLE_DIR" -maxdepth 2 -name "*-setup.exe" -type f 2>/dev/null | head -1)
+          if [ -n "$NSIS" ]; then
+            ZIPFILE="$UPDATER_DIR/$(basename "$NSIS" .exe).nsis.zip"
+            echo "Creating Windows updater bundle: $ZIPFILE"
+            if command -v zip &>/dev/null; then
+              (cd "$(dirname "$NSIS")" && zip "$OLDPWD/$ZIPFILE" "$(basename "$NSIS")")
+            else
+              # PowerShell fallback for Windows runners
+              powershell -c "Compress-Archive -Path '$NSIS' -DestinationPath '$ZIPFILE'" 2>/dev/null || true
+            fi
+            if command -v cargo-tauri &>/dev/null; then
+              cargo tauri signer sign "$ZIPFILE" 2>/dev/null || true
+            fi
+          fi
+
+          echo "=== Updater artifacts ==="
+          ls -la "$UPDATER_DIR"/ 2>/dev/null || echo "(empty)"
+
       - name: Upload all artifacts to release
         shell: bash
         env:
@@ -91,20 +147,26 @@ jobs:
         run: |
           TAG="${{ github.ref_name }}"
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          UPDATER_DIR="updater-artifacts"
 
-          echo "=== All files in bundle dir ==="
-          find "$BUNDLE_DIR" -type f 2>/dev/null || true
-          echo "=== End ==="
-
-          # Upload everything: installers, updater bundles, and signatures
-          find "$BUNDLE_DIR" -type f \
+          # Upload installers from bundle dir
+          find "$BUNDLE_DIR" -maxdepth 2 -type f \
             \( -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.deb" \
-               -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.tar.gz" \
-               -o -name "*.sig" -o -name "*.nsis.zip" -o -name "*.msi.zip" \) \
+               -o -name "*.rpm" -o -name "*.AppImage" \) \
             -exec sh -c '
               for file; do
                 name=$(basename "$file")
                 echo "Uploading: $name"
-                gh release upload "$1" "$file" --clobber || echo "Warning: failed to upload $name"
+                gh release upload "'"$TAG"'" "$file" --clobber || echo "Warning: failed to upload $name"
               done
-            ' _ "$TAG" {} +
+            ' _ {} +
+
+          # Upload updater bundles + signatures
+          if [ -d "$UPDATER_DIR" ]; then
+            for file in "$UPDATER_DIR"/*; do
+              [ -f "$file" ] || continue
+              name=$(basename "$file")
+              echo "Uploading updater artifact: $name"
+              gh release upload "$TAG" "$file" --clobber || echo "Warning: failed to upload $name"
+            done
+          fi

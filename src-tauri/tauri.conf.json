@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/v2/core/tauri-config-schema/schema.json",
   "productName": "AuraAlpha",
   "identifier": "cc.auraalpha.desktop",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "build": {
     "frontendDist": "../dist",
     "beforeBuildCommand": "npm run build",
