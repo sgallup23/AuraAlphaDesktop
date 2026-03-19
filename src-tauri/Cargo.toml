@@ -1,6 +1,6 @@
 [package]
 name = "aura-alpha-desktop"
-version = "1.4.3"
+version = "1.4.4"
 description = "Aura Alpha Trading Desk"
 authors = ["Aura Alpha"]
 edition = "2021"
