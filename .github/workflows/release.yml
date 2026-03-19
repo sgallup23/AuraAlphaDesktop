@@ -135,18 +135,18 @@ jobs:
           TAG="${{ github.ref_name }}"
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
 
-          # Find all .sig files in the bundle output (handle spaces in filenames)
-          while IFS= read -r -d '' sig; do
+          # Upload all .sig files and updater bundles
+          shopt -s globstar nullglob
+          for sig in "$BUNDLE_DIR"/**/*.sig; do
+            [ -f "$sig" ] || continue
             name=$(basename "$sig")
             echo "Uploading signature: $name"
             gh release upload "$TAG" "$sig" --clobber || echo "Warning: failed to upload $name"
-          done < <(find "$BUNDLE_DIR" -name "*.sig" -type f -print0 2>/dev/null)
-
-          # Also upload updater bundles (.tar.gz, .nsis.zip) if not already uploaded
-          for ext in tar.gz nsis.zip; do
-            while IFS= read -r -d '' bundle; do
-              name=$(basename "$bundle")
-              echo "Uploading updater bundle: $name"
-              gh release upload "$TAG" "$bundle" --clobber || echo "Warning: failed to upload $name (may already exist)"
-            done < <(find "$BUNDLE_DIR" -name "*.$ext" -not -name "*.sig" -type f -print0 2>/dev/null)
+          done
+          for bundle in "$BUNDLE_DIR"/**/*.tar.gz "$BUNDLE_DIR"/**/*.nsis.zip; do
+            [ -f "$bundle" ] || continue
+            [[ "$bundle" == *.sig ]] && continue
+            name=$(basename "$bundle")
+            echo "Uploading updater bundle: $name"
+            gh release upload "$TAG" "$bundle" --clobber || echo "Warning: failed to upload $name (may already exist)"
           done
