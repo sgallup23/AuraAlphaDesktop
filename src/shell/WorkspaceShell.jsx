@@ -1,5 +1,32 @@
-import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, Suspense, Component } from 'react';
 import DockLayout from 'rc-dock';
+
+// Catch DockLayout crashes (corrupted saved layouts) without killing the whole app
+class DockErrorBoundary extends Component {
+  state = { crashed: false };
+  static getDerivedStateFromError() { return { crashed: true }; }
+  componentDidCatch(err) { console.error('[DockLayout crash]', err); }
+  render() {
+    if (this.state.crashed) {
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: '#0D1117', color: '#E6EDF3', fontFamily: 'system-ui' }}>
+          <div style={{ textAlign: 'center' }}>
+            <p style={{ color: '#8B949E', marginBottom: 12 }}>Workspace layout failed to load.</p>
+            <button onClick={async () => {
+              try { const { invoke: inv } = await import('@tauri-apps/api/core'); await inv('save_workspace', { name: 'default', layoutJson: '{}' }); } catch {}
+              localStorage.clear();
+              this.setState({ crashed: false });
+              window.location.reload();
+            }} style={{ padding: '8px 20px', background: '#58A6FF', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
+              Reset Workspace
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 import 'rc-dock/dist/rc-dock-dark.css';
 import '../docking/dockTheme.css';
 import { invoke } from '@tauri-apps/api/core';
@@ -145,12 +172,14 @@ export default function WorkspaceShell() {
         onAddPanel={handleAddPanel}
       />
       <div className="flex-1 relative">
-        <DockLayout
-          ref={dockRef}
-          defaultLayout={DEFAULT_LAYOUT}
-          loadTab={loadTab}
-          style={{ position: 'absolute', inset: 0 }}
-        />
+        <DockErrorBoundary>
+          <DockLayout
+            ref={dockRef}
+            defaultLayout={DEFAULT_LAYOUT}
+            loadTab={loadTab}
+            style={{ position: 'absolute', inset: 0 }}
+          />
+        </DockErrorBoundary>
       </div>
       <CommandPalette
         open={paletteOpen}

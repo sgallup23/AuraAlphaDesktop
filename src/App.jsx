@@ -1,3 +1,4 @@
+window.__APP_LOAD_TIME = Date.now();
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { PreferencesProvider } from './contexts/PreferencesContext';
 import LoginPage from './pages/LoginPage';
@@ -15,12 +16,24 @@ class ErrorBoundary extends Component {
           const { invoke } = await import('@tauri-apps/api/core');
           await invoke('clear_auth_token').catch(() => {});
           await invoke('save_workspace', { name: 'default', layoutJson: '{}' }).catch(() => {});
+          // Also clear any corrupted preferences
+          await invoke('save_preferences', { prefsJson: '{}' }).catch(() => {});
         } catch {}
         localStorage.clear();
         sessionStorage.clear();
+        // Force clear IndexedDB if present
+        try { indexedDB.databases().then(dbs => dbs.forEach(db => indexedDB.deleteDatabase(db.name))); } catch {}
         this.setState({ error: null });
         window.location.reload();
       };
+      // Auto-reset on first launch crash (if error happens within 5s of load)
+      const timeSinceLoad = Date.now() - (window.__APP_LOAD_TIME || Date.now());
+      const isFirstLoadCrash = timeSinceLoad < 5000;
+      if (isFirstLoadCrash && !sessionStorage.getItem('auto_reset_attempted')) {
+        sessionStorage.setItem('auto_reset_attempted', '1');
+        resetApp();
+        return null;
+      }
       return (
         <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0D1117', color: '#E6EDF3', fontFamily: 'system-ui, sans-serif' }}>
           <div style={{ textAlign: 'center', maxWidth: 480, padding: 32 }}>
