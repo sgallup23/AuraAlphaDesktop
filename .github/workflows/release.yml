@@ -14,7 +14,29 @@ permissions:
   contents: write
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.id }}
+    steps:
+      - name: Create GitHub Release
+        id: create
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'Aura Alpha Desktop ${{ github.ref_name }}'
+          body: |
+            Desktop application for Aura Alpha Trading Desk.
+
+            **Downloads:**
+            - Windows: `.msi` or `.exe` (NSIS installer)
+            - macOS: `.dmg`
+            - Linux: `.deb` or `.AppImage`
+          draft: false
+          prerelease: false
+
   build:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -56,78 +78,13 @@ jobs:
         run: npm ci
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code signing and notarization (active when secrets are set)
-          # To enable macOS signing and notarization:
-          # 1. Run scripts/setup-macos-signing.sh to export your Developer ID certificate
-          # 2. Base64 encode it: base64 -i certificate.p12 | pbcopy
-          # 3. Add GitHub Secrets:
-          #    APPLE_CERTIFICATE = <base64 of .p12 file>
-          #    APPLE_CERTIFICATE_PASSWORD = <p12 password>
-          #    APPLE_SIGNING_IDENTITY = "Developer ID Application: Your Name (TEAMID)"
-          #    APPLE_ID = <your Apple ID email>
-          #    APPLE_PASSWORD = <app-specific password from appleid.apple.com>
-          #    APPLE_TEAM_ID = <10-char team ID from developer.apple.com>
-          # The tauri-action will auto-sign and notarize when these are present.
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Aura Alpha Desktop ${{ github.ref_name }}'
-          releaseBody: |
-            Desktop application for Aura Alpha Trading Desk.
+        run: npx tauri build --target ${{ matrix.target }}
 
-            **Downloads:**
-            - Windows: `.msi` or `.exe` (NSIS installer)
-            - macOS: `.dmg`
-            - Linux: `.deb` or `.AppImage`
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
-          args: --target ${{ matrix.target }}
-
-      # To enable Windows code signing:
-      # 1. Buy an OV or EV code signing certificate (.pfx file)
-      # 2. Base64 encode it: base64 -i certificate.pfx | pbcopy
-      # 3. Add as GitHub Secret: WINDOWS_CERTIFICATE = <base64 string>
-      # 4. Add as GitHub Secret: WINDOWS_CERTIFICATE_PASSWORD = <pfx password>
-      # The build will auto-sign when these secrets are present.
-      - name: Sign Windows executables
-        if: matrix.platform == 'windows-latest' && env.WINDOWS_CERTIFICATE != ''
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        shell: powershell
-        run: |
-          # Decode certificate from base64
-          $certBytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
-          $certPath = Join-Path $env:TEMP "code_signing.pfx"
-          [IO.File]::WriteAllBytes($certPath, $certBytes)
-
-          # Find and sign all .exe and .msi files in the output
-          $artifacts = Get-ChildItem -Path "src-tauri/target" -Recurse -Include "*.exe","*.msi" | Where-Object { $_.Length -gt 100000 }
-
-          foreach ($file in $artifacts) {
-            Write-Host "Signing: $($file.FullName)"
-            & signtool.exe sign /f $certPath /p $env:WINDOWS_CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 "$($file.FullName)"
-            if ($LASTEXITCODE -ne 0) {
-              Write-Warning "Failed to sign $($file.Name) - continuing..."
-            }
-          }
-
-          # Clean up
-          Remove-Item $certPath -Force
-
-      # Upload .sig files that tauri-action misses
-      - name: Upload updater signatures
+      - name: Upload all artifacts to release
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -135,25 +92,13 @@ jobs:
           TAG="${{ github.ref_name }}"
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
 
-          # Debug: show all files in bundle dir
-          echo "=== Bundle dir contents ==="
-          find "$BUNDLE_DIR" -type f -name "*.sig" -o -name "*.tar.gz" -o -name "*.nsis.zip" 2>/dev/null || true
+          echo "=== All bundle artifacts ==="
+          find "$BUNDLE_DIR" -type f \( -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.tar.gz" -o -name "*.sig" -o -name "*.nsis.zip" -o -name "*.msi.zip" \) 2>/dev/null
           echo "=== End ==="
 
-          # Upload all .sig files (use find with exec to avoid glob/subprocess issues)
-          find "$BUNDLE_DIR" -type f -name "*.sig" -exec sh -c '
-            for sig; do
-              name=$(basename "$sig")
-              echo "Uploading signature: $name"
-              gh release upload "'"$TAG"'" "$sig" --clobber || echo "Warning: failed to upload $name"
-            done
-          ' _ {} +
-
-          # Upload updater bundles (.tar.gz, .nsis.zip) not already uploaded
-          find "$BUNDLE_DIR" -type f \( -name "*.tar.gz" -o -name "*.nsis.zip" \) ! -name "*.sig" -exec sh -c '
-            for bundle; do
-              name=$(basename "$bundle")
-              echo "Uploading updater bundle: $name"
-              gh release upload "'"$TAG"'" "$bundle" --clobber || echo "Warning: failed to upload $name (may already exist)"
-            done
-          ' _ {} +
+          # Upload everything: installers, updater bundles, and signatures
+          find "$BUNDLE_DIR" -type f \( -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.tar.gz" -o -name "*.sig" -o -name "*.nsis.zip" -o -name "*.msi.zip" \) -print0 2>/dev/null | while IFS= read -r -d '' file; do
+            name=$(basename "$file")
+            echo "Uploading: $name"
+            gh release upload "$TAG" "$file" --clobber || echo "Warning: failed to upload $name"
+          done
