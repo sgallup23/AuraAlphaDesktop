@@ -756,32 +756,43 @@ async fn get_bot_log(
 
 // ── Research Worker Sidecar ───────────────────────────────────────────
 
-/// Find the sidecar script path (relative to the app's resource dir or exe dir)
+/// Find the sidecar script path (checks bundled resource dirs per-platform, then fallbacks)
 fn find_research_worker_script() -> Option<std::path::PathBuf> {
-    // Check next to the executable first (development / packaged)
+    let target = std::path::Path::new("sidecar").join("research_worker.py");
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            // Packaged: sidecar/ lives next to the binary
-            let candidate = exe_dir.join("sidecar").join("research_worker.py");
+            // Windows / Linux AppImage: resources are next to the binary
+            let candidate = exe_dir.join(&target);
             if candidate.exists() {
                 return Some(candidate);
             }
+
+            // macOS .app bundle: exe is at Contents/MacOS/, resources at Contents/Resources/
+            let macos_resources = exe_dir.join("../Resources").join(&target);
+            if macos_resources.exists() {
+                return Some(macos_resources);
+            }
+
+            // Linux .deb: exe at /usr/bin/, resources at /usr/share/<identifier>/
+            let deb_resources = std::path::Path::new("/usr/share/cc.auraalpha.desktop").join(&target);
+            if deb_resources.exists() {
+                return Some(deb_resources);
+            }
+
             // Development: walk up to project root
             let dev_candidate = exe_dir
                 .ancestors()
-                .find(|p| p.join("sidecar").join("research_worker.py").exists())
-                .map(|p| p.join("sidecar").join("research_worker.py"));
+                .find(|p| p.join(&target).exists())
+                .map(|p| p.join(&target));
             if let Some(path) = dev_candidate {
                 return Some(path);
             }
         }
     }
-    // Fallback: check home dir
+    // Fallback: check home dir (dev clones)
     if let Some(home) = dirs::home_dir() {
-        let candidate = home
-            .join("AuraAlphaDesktop")
-            .join("sidecar")
-            .join("research_worker.py");
+        let candidate = home.join("AuraAlphaDesktop").join(&target);
         if candidate.exists() {
             return Some(candidate);
         }
@@ -811,8 +822,11 @@ fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result<Chi
         "python3".to_string()
     };
 
-    // Create log directory next to the script
-    let log_dir = script.parent().unwrap().parent().unwrap().join("logs");
+    // Create log directory in user-writable location (not inside .app bundle or AppImage)
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local").join("share"))
+        .join("cc.auraalpha.desktop")
+        .join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
     let log_file = std::fs::File::create(log_dir.join("research_worker.log"))
         .map_err(|e| format!("Cannot create log file: {}", e))?;
