@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { createChart } from 'lightweight-charts';
 import useChartData from '../hooks/useChartData';
+import { getApiBase } from '../utils/api';
 
 const TIMEFRAMES = ['1D', '1W', '1M', '3M', '6M', '1Y', 'ALL'];
+const TF_TO_BARS = { '1D': 1, '1W': 5, '1M': 22, '3M': 66, '6M': 130, '1Y': 252, 'ALL': 500 };
 const POPULAR = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'GOOGL', 'META', 'AMD', 'BTCUSD', 'ETHUSD'];
 
 export default function ChartPanel() {
@@ -78,7 +80,7 @@ export default function ChartPanel() {
     }
   }, []);
 
-  useEffect(() => { loadChart(symbol, timeframe); }, [symbol, timeframe]);
+  useEffect(() => { if (!chartError) loadChart(symbol, timeframe); }, [symbol, timeframe]);
 
   const handleSymbolSubmit = (e) => {
     e.preventDefault();
@@ -124,13 +126,16 @@ export default function ChartPanel() {
           </button>
         ))}
       </div>
-      {/* Chart */}
+      {/* Chart — WebGL or server-rendered PNG fallback */}
       {chartError ? (
-        <div className="flex-1 flex items-center justify-center text-aura-muted text-sm">
-          <div className="text-center">
-            <p className="mb-1">Chart unavailable on this device</p>
-            <p className="text-xs text-aura-muted/60">WebGL not supported: {chartError}</p>
-          </div>
+        <div className="flex-1 min-h-0 flex items-center justify-center bg-aura-bg p-2">
+          <img
+            src={`${getApiBase()}/charts/render/${symbol}?bars=${TF_TO_BARS[timeframe] || 130}&width=800&height=450`}
+            alt={`${symbol} chart`}
+            className="max-w-full max-h-full object-contain rounded"
+            onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }}
+          />
+          <p className="text-xs text-aura-muted text-center hidden">Chart unavailable</p>
         </div>
       ) : (
         <div ref={containerRef} className="flex-1 min-h-0" />
