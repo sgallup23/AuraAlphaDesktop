@@ -79,11 +79,10 @@ class StandaloneWorker:
     # ── Heartbeat ─────────────────────────────────────────────────────
 
     def _heartbeat_loop(self) -> None:
-        """Background daemon thread: sends heartbeats for active jobs."""
+        """Background daemon thread: sends heartbeats even when idle."""
         while not self._shutdown.is_set():
             try:
-                if self._active_job_ids:
-                    self.client.heartbeat(list(self._active_job_ids))
+                self.client.heartbeat(list(self._active_job_ids))
             except Exception as e:
                 log.debug("Heartbeat error: %s", e)
             self._shutdown.wait(timeout=self.config.heartbeat_interval)
