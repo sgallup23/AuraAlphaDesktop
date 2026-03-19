@@ -32,12 +32,25 @@ export function AuthProvider({ children }) {
 
   const login = useCallback(async (username, password, remember = true) => {
     // Use Rust proxy to bypass CORS (Cloudflare blocks tauri://localhost origin)
-    const text = await invoke('api_proxy', {
-      method: 'POST',
-      path: 'https://auraalpha.cc/api/auth/login',
-      body: JSON.stringify({ username, password }),
-      authToken: null,
-    }).catch(e => { throw new Error(typeof e === 'string' ? e : 'Connection failed'); });
+    // Retry up to 3 times (DB lock on EC2 can cause transient failures)
+    let text;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        text = await invoke('api_proxy', {
+          method: 'POST',
+          path: 'https://auraalpha.cc/api/auth/login',
+          body: JSON.stringify({ username, password }),
+          authToken: null,
+        });
+        break;
+      } catch (e) {
+        if (attempt < 2) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+        throw new Error(typeof e === 'string' ? e : 'Connection failed — retrying...');
+      }
+    }
     const data = JSON.parse(text);
     setToken(data.access_token);
     setUser(data.user || { username });
