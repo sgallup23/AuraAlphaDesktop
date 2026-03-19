@@ -77,6 +77,43 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Bundle portable Python
+        shell: bash
+        run: |
+          # Download standalone Python from python-build-standalone (portable, relocatable)
+          PY_VER="3.12.9"
+          PY_TAG="20250317"
+          DEST="src-tauri/sidecar/python"
+          mkdir -p "$DEST"
+
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin)
+              URL="https://github.com/indygreg/python-build-standalone/releases/download/${PY_TAG}/cpython-${PY_VER}+${PY_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
+              ;;
+            x86_64-apple-darwin)
+              URL="https://github.com/indygreg/python-build-standalone/releases/download/${PY_TAG}/cpython-${PY_VER}+${PY_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
+              ;;
+            x86_64-unknown-linux-gnu)
+              URL="https://github.com/indygreg/python-build-standalone/releases/download/${PY_TAG}/cpython-${PY_VER}+${PY_TAG}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+              ;;
+            x86_64-pc-windows-msvc)
+              URL="https://github.com/indygreg/python-build-standalone/releases/download/${PY_TAG}/cpython-${PY_VER}+${PY_TAG}-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+              ;;
+          esac
+
+          echo "Downloading portable Python from: $URL"
+          curl -sL "$URL" | tar xz -C "$DEST" --strip-components=1
+
+          # Verify
+          if [ -f "$DEST/bin/python3" ]; then
+            echo "Bundled Python: $("$DEST/bin/python3" --version)"
+          elif [ -f "$DEST/python.exe" ]; then
+            echo "Bundled Python (Windows): found"
+          else
+            echo "WARNING: Python binary not found in $DEST"
+            ls -la "$DEST"/
+          fi
+
       - name: Build Tauri app
         shell: bash
         env:

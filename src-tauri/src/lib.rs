@@ -805,21 +805,42 @@ fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result<Chi
     let script = find_research_worker_script()
         .ok_or_else(|| "research_worker.py not found".to_string())?;
 
-    // Find python — prefer project venv, then system
-    let python = if let Some(home) = dirs::home_dir() {
-        let prodesk_venv = home
-            .join("TRADING_DESK")
-            .join("prodesk")
-            .join(".venv")
-            .join("bin")
-            .join("python");
-        if prodesk_venv.exists() {
-            prodesk_venv.to_string_lossy().to_string()
-        } else {
-            "python3".to_string()
+    // Find python — prefer bundled portable Python, then system
+    let python = {
+        let mut found = String::from("python3");
+        // Check for bundled Python next to the sidecar script
+        if let Some(script_dir) = script.parent() {
+            // Unix: sidecar/python/bin/python3
+            let bundled_unix = script_dir.join("python").join("bin").join("python3");
+            // Windows: sidecar/python/python.exe
+            let bundled_win = script_dir.join("python").join("python.exe");
+            // Also check one level up (macOS Resources/sidecar/python/...)
+            let bundled_unix_res = script_dir.parent()
+                .map(|p| p.join("sidecar").join("python").join("bin").join("python3"))
+                .unwrap_or_default();
+
+            if bundled_unix.exists() {
+                found = bundled_unix.to_string_lossy().to_string();
+                log::info!("Using bundled Python: {}", found);
+            } else if bundled_win.exists() {
+                found = bundled_win.to_string_lossy().to_string();
+                log::info!("Using bundled Python (Windows): {}", found);
+            } else if bundled_unix_res.exists() {
+                found = bundled_unix_res.to_string_lossy().to_string();
+                log::info!("Using bundled Python (Resources): {}", found);
+            }
         }
-    } else {
-        "python3".to_string()
+        // Fallback: prodesk venv or system python
+        if found == "python3" {
+            if let Some(home) = dirs::home_dir() {
+                let prodesk_venv = home.join("TRADING_DESK").join("prodesk")
+                    .join(".venv").join("bin").join("python");
+                if prodesk_venv.exists() {
+                    found = prodesk_venv.to_string_lossy().to_string();
+                }
+            }
+        }
+        found
     };
 
     // Create log directory in user-writable location (not inside .app bundle or AppImage)
