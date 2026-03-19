@@ -135,18 +135,25 @@ jobs:
           TAG="${{ github.ref_name }}"
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
 
-          # Upload all .sig files and updater bundles
-          shopt -s globstar nullglob
-          for sig in "$BUNDLE_DIR"/**/*.sig; do
-            [ -f "$sig" ] || continue
-            name=$(basename "$sig")
-            echo "Uploading signature: $name"
-            gh release upload "$TAG" "$sig" --clobber || echo "Warning: failed to upload $name"
-          done
-          for bundle in "$BUNDLE_DIR"/**/*.tar.gz "$BUNDLE_DIR"/**/*.nsis.zip; do
-            [ -f "$bundle" ] || continue
-            [[ "$bundle" == *.sig ]] && continue
-            name=$(basename "$bundle")
-            echo "Uploading updater bundle: $name"
-            gh release upload "$TAG" "$bundle" --clobber || echo "Warning: failed to upload $name (may already exist)"
-          done
+          # Debug: show all files in bundle dir
+          echo "=== Bundle dir contents ==="
+          find "$BUNDLE_DIR" -type f -name "*.sig" -o -name "*.tar.gz" -o -name "*.nsis.zip" 2>/dev/null || true
+          echo "=== End ==="
+
+          # Upload all .sig files (use find with exec to avoid glob/subprocess issues)
+          find "$BUNDLE_DIR" -type f -name "*.sig" -exec sh -c '
+            for sig; do
+              name=$(basename "$sig")
+              echo "Uploading signature: $name"
+              gh release upload "'"$TAG"'" "$sig" --clobber || echo "Warning: failed to upload $name"
+            done
+          ' _ {} +
+
+          # Upload updater bundles (.tar.gz, .nsis.zip) not already uploaded
+          find "$BUNDLE_DIR" -type f \( -name "*.tar.gz" -o -name "*.nsis.zip" \) ! -name "*.sig" -exec sh -c '
+            for bundle; do
+              name=$(basename "$bundle")
+              echo "Uploading updater bundle: $name"
+              gh release upload "'"$TAG"'" "$bundle" --clobber || echo "Warning: failed to upload $name (may already exist)"
+            done
+          ' _ {} +
