@@ -38,7 +38,8 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "sidecar/**/*"
+      "sidecar/**/*",
+      "../grid_worker/**/*"
     ],
     "icon": [
       "icons/32x32.png",

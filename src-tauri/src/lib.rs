@@ -756,45 +756,50 @@ async fn get_bot_log(
 
 // ── Research Worker Sidecar ───────────────────────────────────────────
 
-/// Find the sidecar script path (checks bundled resource dirs per-platform, then fallbacks)
+/// Find the grid worker script path (checks bundled resource dirs per-platform, then fallbacks)
 fn find_research_worker_script() -> Option<std::path::PathBuf> {
-    let target = std::path::Path::new("sidecar").join("research_worker.py");
+    // Primary: grid_worker/worker.py (consolidated worker)
+    let target = std::path::Path::new("grid_worker").join("worker.py");
+    // Legacy fallback: sidecar/research_worker.py
+    let legacy = std::path::Path::new("sidecar").join("research_worker.py");
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            // Windows / Linux AppImage: resources are next to the binary
-            let candidate = exe_dir.join(&target);
+    for search_target in [&target, &legacy] {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                // Windows / Linux AppImage: resources are next to the binary
+                let candidate = exe_dir.join(search_target);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+
+                // macOS .app bundle: exe is at Contents/MacOS/, resources at Contents/Resources/
+                let macos_resources = exe_dir.join("../Resources").join(search_target);
+                if macos_resources.exists() {
+                    return Some(macos_resources);
+                }
+
+                // Linux .deb: exe at /usr/bin/, resources at /usr/share/<identifier>/
+                let deb_resources = std::path::Path::new("/usr/share/cc.auraalpha.desktop").join(search_target);
+                if deb_resources.exists() {
+                    return Some(deb_resources);
+                }
+
+                // Development: walk up to project root
+                let dev_candidate = exe_dir
+                    .ancestors()
+                    .find(|p| p.join(search_target).exists())
+                    .map(|p| p.join(search_target));
+                if let Some(path) = dev_candidate {
+                    return Some(path);
+                }
+            }
+        }
+        // Fallback: check home dir (dev clones)
+        if let Some(home) = dirs::home_dir() {
+            let candidate = home.join("AuraAlphaDesktop").join(search_target);
             if candidate.exists() {
                 return Some(candidate);
             }
-
-            // macOS .app bundle: exe is at Contents/MacOS/, resources at Contents/Resources/
-            let macos_resources = exe_dir.join("../Resources").join(&target);
-            if macos_resources.exists() {
-                return Some(macos_resources);
-            }
-
-            // Linux .deb: exe at /usr/bin/, resources at /usr/share/<identifier>/
-            let deb_resources = std::path::Path::new("/usr/share/cc.auraalpha.desktop").join(&target);
-            if deb_resources.exists() {
-                return Some(deb_resources);
-            }
-
-            // Development: walk up to project root
-            let dev_candidate = exe_dir
-                .ancestors()
-                .find(|p| p.join(&target).exists())
-                .map(|p| p.join(&target));
-            if let Some(path) = dev_candidate {
-                return Some(path);
-            }
-        }
-    }
-    // Fallback: check home dir (dev clones)
-    if let Some(home) = dirs::home_dir() {
-        let candidate = home.join("AuraAlphaDesktop").join(&target);
-        if candidate.exists() {
-            return Some(candidate);
         }
     }
     None
@@ -869,15 +874,19 @@ fn find_python_for_worker(script: &std::path::Path) -> (String, bool) {
     let mut found = String::from("python3");
     let mut is_bundled = false;
 
-    // Check for bundled Python next to the sidecar script
+    // Check for bundled Python next to the worker script
     if let Some(script_dir) = script.parent() {
-        // Unix: sidecar/python/bin/python3
+        // Unix: grid_worker/python/bin/python3 or sidecar/python/bin/python3
         let bundled_unix = script_dir.join("python").join("bin").join("python3");
-        // Windows: sidecar/python/python.exe
+        // Windows: grid_worker/python/python.exe or sidecar/python/python.exe
         let bundled_win = script_dir.join("python").join("python.exe");
-        // Also check one level up (macOS Resources/sidecar/python/...)
+        // Also check one level up (macOS Resources/grid_worker/python/... or sidecar/python/...)
         let bundled_unix_res = script_dir.parent()
-            .map(|p| p.join("sidecar").join("python").join("bin").join("python3"))
+            .map(|p| {
+                let grid = p.join("grid_worker").join("python").join("bin").join("python3");
+                if grid.exists() { return grid; }
+                p.join("sidecar").join("python").join("bin").join("python3")
+            })
             .unwrap_or_default();
 
         if bundled_unix.exists() {
