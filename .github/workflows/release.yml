@@ -104,6 +104,13 @@ jobs:
           echo "Downloading portable Python from: $URL"
           curl -sL "$URL" | tar xz -C "$DEST" --strip-components=1
 
+          # Ensure execute permissions on the Python binary and bin/ directory.
+          # Without this, macOS Gatekeeper may strip +x when the .app is downloaded,
+          # and the Tauri bundler may not preserve permissions from the tarball.
+          if [ -d "$DEST/bin" ]; then
+            chmod -R +x "$DEST/bin/"
+          fi
+
           # Verify
           if [ -f "$DEST/bin/python3" ]; then
             echo "Bundled Python: $("$DEST/bin/python3" --version)"

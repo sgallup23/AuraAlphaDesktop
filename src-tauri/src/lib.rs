@@ -800,48 +800,138 @@ fn find_research_worker_script() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Spawn the research worker sidecar process
+/// On macOS, Gatekeeper strips the execute bit and attaches com.apple.quarantine
+/// xattrs on downloaded .app bundles. This prevents the bundled Python binary
+/// from running. We fix this at runtime by re-applying +x and removing quarantine
+/// attributes before attempting to spawn.
+#[cfg(target_os = "macos")]
+fn fix_gatekeeper_permissions(sidecar_dir: &std::path::Path) {
+    // Remove com.apple.quarantine xattrs from the entire sidecar directory.
+    // This is safe — the sidecar was bundled by our CI, not user-downloaded content.
+    log::info!("Removing quarantine xattrs from sidecar dir: {}", sidecar_dir.display());
+    let xattr_result = Command::new("xattr")
+        .arg("-cr")
+        .arg(sidecar_dir)
+        .output();
+    match xattr_result {
+        Ok(output) => {
+            if !output.status.success() {
+                log::warn!(
+                    "xattr -cr returned non-zero ({}): {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+        Err(e) => log::warn!("Failed to run xattr -cr: {}", e),
+    }
+
+    // Re-apply execute permissions on bundled Python binary and any shared libs
+    let python_bin_dir = sidecar_dir.join("python").join("bin");
+    if python_bin_dir.exists() {
+        log::info!("Fixing execute permissions on: {}", python_bin_dir.display());
+        if let Err(e) = Command::new("chmod")
+            .arg("-R")
+            .arg("+x")
+            .arg(&python_bin_dir)
+            .status()
+        {
+            log::warn!("chmod +x on python/bin failed: {}", e);
+        }
+    }
+}
+
+/// Ensure the bundled Python binary has execute permissions.
+/// On macOS this is handled by fix_gatekeeper_permissions(); on other Unix
+/// systems we just set the execute bit directly via std::fs.
+#[cfg(not(target_os = "macos"))]
+fn ensure_python_executable(python_path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(python_path) {
+            let mut perms = meta.permissions();
+            let mode = perms.mode();
+            if mode & 0o111 == 0 {
+                log::info!("Adding execute permission to: {}", python_path.display());
+                perms.set_mode(mode | 0o755);
+                if let Err(e) = std::fs::set_permissions(python_path, perms) {
+                    log::warn!("Failed to chmod bundled Python: {}", e);
+                }
+            }
+        }
+    }
+}
+
+/// Locate the bundled Python binary path from the sidecar script directory.
+/// Returns (python_path_string, is_bundled).
+fn find_python_for_worker(script: &std::path::Path) -> (String, bool) {
+    let mut found = String::from("python3");
+    let mut is_bundled = false;
+
+    // Check for bundled Python next to the sidecar script
+    if let Some(script_dir) = script.parent() {
+        // Unix: sidecar/python/bin/python3
+        let bundled_unix = script_dir.join("python").join("bin").join("python3");
+        // Windows: sidecar/python/python.exe
+        let bundled_win = script_dir.join("python").join("python.exe");
+        // Also check one level up (macOS Resources/sidecar/python/...)
+        let bundled_unix_res = script_dir.parent()
+            .map(|p| p.join("sidecar").join("python").join("bin").join("python3"))
+            .unwrap_or_default();
+
+        if bundled_unix.exists() {
+            found = bundled_unix.to_string_lossy().to_string();
+            is_bundled = true;
+            log::info!("Using bundled Python: {}", found);
+        } else if bundled_win.exists() {
+            found = bundled_win.to_string_lossy().to_string();
+            is_bundled = true;
+            log::info!("Using bundled Python (Windows): {}", found);
+        } else if bundled_unix_res.exists() {
+            found = bundled_unix_res.to_string_lossy().to_string();
+            is_bundled = true;
+            log::info!("Using bundled Python (Resources): {}", found);
+        }
+    }
+
+    // Fallback: prodesk venv or system python
+    if found == "python3" {
+        if let Some(home) = dirs::home_dir() {
+            let prodesk_venv = home.join("TRADING_DESK").join("prodesk")
+                .join(".venv").join("bin").join("python");
+            if prodesk_venv.exists() {
+                found = prodesk_venv.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    (found, is_bundled)
+}
+
+/// Spawn the research worker sidecar process.
+///
+/// Includes retry logic (up to 3 attempts with 5s delay) and Gatekeeper
+/// permission fixes on macOS to handle quarantine on downloaded .app bundles.
 fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result<Child, String> {
     let script = find_research_worker_script()
         .ok_or_else(|| "research_worker.py not found".to_string())?;
 
-    // Find python — prefer bundled portable Python, then system
-    let python = {
-        let mut found = String::from("python3");
-        // Check for bundled Python next to the sidecar script
-        if let Some(script_dir) = script.parent() {
-            // Unix: sidecar/python/bin/python3
-            let bundled_unix = script_dir.join("python").join("bin").join("python3");
-            // Windows: sidecar/python/python.exe
-            let bundled_win = script_dir.join("python").join("python.exe");
-            // Also check one level up (macOS Resources/sidecar/python/...)
-            let bundled_unix_res = script_dir.parent()
-                .map(|p| p.join("sidecar").join("python").join("bin").join("python3"))
-                .unwrap_or_default();
+    // Fix Gatekeeper permissions on macOS before resolving the Python binary.
+    // Downloaded .app bundles get quarantine xattrs and stripped execute bits,
+    // which prevents the bundled Python from launching.
+    #[cfg(target_os = "macos")]
+    if let Some(script_dir) = script.parent() {
+        fix_gatekeeper_permissions(script_dir);
+    }
 
-            if bundled_unix.exists() {
-                found = bundled_unix.to_string_lossy().to_string();
-                log::info!("Using bundled Python: {}", found);
-            } else if bundled_win.exists() {
-                found = bundled_win.to_string_lossy().to_string();
-                log::info!("Using bundled Python (Windows): {}", found);
-            } else if bundled_unix_res.exists() {
-                found = bundled_unix_res.to_string_lossy().to_string();
-                log::info!("Using bundled Python (Resources): {}", found);
-            }
-        }
-        // Fallback: prodesk venv or system python
-        if found == "python3" {
-            if let Some(home) = dirs::home_dir() {
-                let prodesk_venv = home.join("TRADING_DESK").join("prodesk")
-                    .join(".venv").join("bin").join("python");
-                if prodesk_venv.exists() {
-                    found = prodesk_venv.to_string_lossy().to_string();
-                }
-            }
-        }
-        found
-    };
+    let (python, is_bundled) = find_python_for_worker(&script);
+
+    // On non-macOS Unix, ensure the bundled binary is executable
+    #[cfg(not(target_os = "macos"))]
+    if is_bundled {
+        ensure_python_executable(std::path::Path::new(&python));
+    }
 
     // Create log directory in user-writable location (not inside .app bundle or AppImage)
     let log_dir = dirs::data_local_dir()
@@ -849,11 +939,6 @@ fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result<Chi
         .join("cc.auraalpha.desktop")
         .join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
-    let log_file = std::fs::File::create(log_dir.join("research_worker.log"))
-        .map_err(|e| format!("Cannot create log file: {}", e))?;
-    let log_err = log_file
-        .try_clone()
-        .map_err(|e| format!("Cannot clone log file: {}", e))?;
 
     // Set GRID_TOKEN_DIR so the Python worker stores/loads its provisioned
     // token in the app's data directory (not inside the .app bundle).
@@ -862,17 +947,85 @@ fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result<Chi
         .join("cc.auraalpha.desktop");
     let _ = std::fs::create_dir_all(&token_dir);
 
-    Command::new(&python)
-        .arg(script.to_string_lossy().as_ref())
-        .arg("--coordinator-url")
-        .arg(coordinator_url)
-        .arg("--max-parallel")
-        .arg(max_parallel.to_string())
-        .env("GRID_TOKEN_DIR", token_dir.to_string_lossy().as_ref())
-        .stdout(log_file)
-        .stderr(log_err)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn research worker: {}", e))
+    // Retry loop: attempt spawn up to 3 times with 5-second delay between attempts.
+    // This handles transient failures such as the OS still releasing quarantine locks
+    // or the file system not yet reflecting permission changes.
+    let max_attempts = 3;
+    let mut last_error = String::new();
+
+    for attempt in 1..=max_attempts {
+        let log_file = match std::fs::File::create(log_dir.join("research_worker.log")) {
+            Ok(f) => f,
+            Err(e) => return Err(format!("Cannot create log file: {}", e)),
+        };
+        let log_err = match log_file.try_clone() {
+            Ok(f) => f,
+            Err(e) => return Err(format!("Cannot clone log file: {}", e)),
+        };
+
+        match Command::new(&python)
+            .arg(script.to_string_lossy().as_ref())
+            .arg("--coordinator-url")
+            .arg(coordinator_url)
+            .arg("--max-parallel")
+            .arg(max_parallel.to_string())
+            .env("GRID_TOKEN_DIR", token_dir.to_string_lossy().as_ref())
+            .stdout(log_file)
+            .stderr(log_err)
+            .spawn()
+        {
+            Ok(child) => return Ok(child),
+            Err(e) => {
+                last_error = format!(
+                    "Spawn attempt {}/{} failed — python='{}', script='{}', error='{}'",
+                    attempt, max_attempts, python, script.display(), e
+                );
+                log::error!("{}", last_error);
+                if attempt < max_attempts {
+                    log::info!("Retrying research worker spawn in 5 seconds...");
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
+            }
+        }
+    }
+
+    // All retries exhausted — if the bundled Python failed, try system python3 as a last resort
+    if is_bundled {
+        log::warn!(
+            "Bundled Python failed after {} attempts. Falling back to system python3.",
+            max_attempts
+        );
+        let log_file = std::fs::File::create(log_dir.join("research_worker.log"))
+            .map_err(|e| format!("Cannot create log file: {}", e))?;
+        let log_err = log_file
+            .try_clone()
+            .map_err(|e| format!("Cannot clone log file: {}", e))?;
+
+        match Command::new("python3")
+            .arg(script.to_string_lossy().as_ref())
+            .arg("--coordinator-url")
+            .arg(coordinator_url)
+            .arg("--max-parallel")
+            .arg(max_parallel.to_string())
+            .env("GRID_TOKEN_DIR", token_dir.to_string_lossy().as_ref())
+            .stdout(log_file)
+            .stderr(log_err)
+            .spawn()
+        {
+            Ok(child) => {
+                log::info!("Research worker started with system python3 (fallback).");
+                return Ok(child);
+            }
+            Err(e) => {
+                log::error!("System python3 fallback also failed: {}", e);
+            }
+        }
+    }
+
+    Err(format!(
+        "Research worker failed to start after {} attempts. Last error: {}",
+        max_attempts, last_error
+    ))
 }
 
 /// IPC command: start the research worker sidecar
@@ -1244,7 +1397,16 @@ pub fn run() {
                         }
                     }
                     Err(e) => {
-                        log::warn!("Could not auto-start research worker: {}", e);
+                        log::error!("Could not auto-start research worker: {}", e);
+                        log::error!(
+                            "=== GRID WORKER TROUBLESHOOTING ===\n\
+                             If you are on macOS and downloaded this .app from the internet:\n\
+                             1. Open System Settings > Privacy & Security\n\
+                             2. Look for a blocked app message and click 'Open Anyway'\n\
+                             3. Or run in Terminal: xattr -cr /Applications/Aura\\ Alpha.app\n\
+                             4. Then restart the application.\n\
+                             The bundled Python binary may have been quarantined by Gatekeeper."
+                        );
                     }
                 }
             } else {
