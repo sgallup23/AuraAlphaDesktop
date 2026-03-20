@@ -11,22 +11,18 @@ Usage:
 """
 
 import argparse
-import hashlib
 import json
 import logging
 import os
 import platform
 import signal
+import ssl
 import sys
 import time
+import urllib.request
+import urllib.error
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-
-try:
-    import requests
-except ImportError:
-    print("ERROR: 'requests' package required. Install: pip install requests")
-    sys.exit(1)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,7 +34,6 @@ log = logging.getLogger("grid-worker")
 # ── Configuration ────────────────────────────────────────────────
 
 DEFAULT_COORDINATOR = "https://auraalpha.cc"
-WORKER_TOKEN = os.getenv("GRID_WORKER_TOKEN", "aura-desktop-worker-2026")
 POLL_INTERVAL = 5  # seconds between job dequeue attempts
 HEARTBEAT_INTERVAL = 30  # seconds between heartbeats
 LEASE_DURATION = 600  # seconds before job lease expires
@@ -56,6 +51,44 @@ signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 
+# ── Token Persistence ────────────────────────────────────────────
+
+def _token_file_path() -> Path:
+    """Return path to the stored grid token file.
+
+    Checks GRID_TOKEN_DIR env var first (set by the Tauri launcher),
+    then falls back to ~/.auraalpha/.
+    """
+    token_dir = os.getenv("GRID_TOKEN_DIR")
+    if token_dir:
+        d = Path(token_dir)
+    else:
+        d = Path.home() / ".auraalpha"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "grid_token.json"
+
+
+def _load_stored_token() -> dict | None:
+    """Load previously provisioned token + worker_id from disk."""
+    path = _token_file_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        if data.get("token") and data.get("worker_id"):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _save_token(data: dict):
+    """Persist token + worker_id to disk."""
+    path = _token_file_path()
+    path.write_text(json.dumps(data, indent=2))
+    log.info("Token saved to %s", path)
+
+
 # ── Worker Identity ─────────────────────────────────────────────
 
 def _get_worker_id() -> str:
@@ -70,11 +103,48 @@ def _get_system_info() -> dict:
     except Exception:
         cpu_count = 4
 
+    # Get RAM without psutil (stdlib only)
+    ram_gb = 8.0
     try:
         import psutil
         ram_gb = round(psutil.virtual_memory().total / (1024 ** 3), 1)
+    except ImportError:
+        # Try platform-specific fallbacks
+        try:
+            if platform.system() == "Linux":
+                with open("/proc/meminfo") as f:
+                    for line in f:
+                        if line.startswith("MemTotal:"):
+                            ram_kb = int(line.split()[1])
+                            ram_gb = round(ram_kb / (1024 ** 2), 1)
+                            break
+            elif platform.system() == "Darwin":
+                import subprocess
+                out = subprocess.check_output(["sysctl", "-n", "hw.memsize"],
+                                              timeout=5).decode().strip()
+                ram_gb = round(int(out) / (1024 ** 3), 1)
+            elif platform.system() == "Windows":
+                import ctypes
+                class MEMORYSTATUSEX(ctypes.Structure):
+                    _fields_ = [
+                        ("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                    ]
+                stat = MEMORYSTATUSEX()
+                stat.dwLength = ctypes.sizeof(stat)
+                ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+                ram_gb = round(stat.ullTotalPhys / (1024 ** 3), 1)
+        except Exception:
+            pass
     except Exception:
-        ram_gb = 8.0
+        pass
 
     return {
         "hostname": platform.node(),
@@ -87,82 +157,133 @@ def _get_system_info() -> dict:
     }
 
 
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
+# ── Auto-Provision ───────────────────────────────────────────────
+
+def _auto_provision(base_url: str) -> dict:
+    """Call the zero-auth auto-provision endpoint to get a unique token.
+
+    POST /api/cluster/contributor/auto-provision
+    Body: {hostname, cpus, ram, os}
+    Returns: {token, worker_id}
+    """
+    url = f"{base_url.rstrip('/')}/api/cluster/contributor/auto-provision"
+    info = _get_system_info()
+    body = json.dumps({
+        "hostname": info["hostname"],
+        "cpus": info["cpu_count"],
+        "ram": info["ram_gb"],
+        "os": info["os_info"],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("token") and data.get("worker_id"):
+                log.info("Auto-provisioned worker_id=%s", data["worker_id"])
+                return data
+            raise ValueError(f"Unexpected auto-provision response: {data}")
+    except Exception as e:
+        log.warning("Auto-provision failed: %s", e)
+        raise
+
+
+# ── HTTP helpers (stdlib urllib) ─────────────────────────────────
+
+def _http_post(url: str, headers: dict, body: dict, timeout: int = 10) -> tuple:
+    """POST JSON, return (status_code, response_body_dict).
+
+    Returns (0, {}) on network / timeout errors.
+    """
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    try:
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            resp_body = resp.read().decode("utf-8")
+            try:
+                return (resp.status, json.loads(resp_body))
+            except json.JSONDecodeError:
+                return (resp.status, {"raw": resp_body})
+    except urllib.error.HTTPError as e:
+        body_text = ""
+        try:
+            body_text = e.read().decode("utf-8")[:200]
+        except Exception:
+            pass
+        return (e.code, {"error": body_text})
+    except Exception:
+        return (0, {})
 
 
 # ── API Client ──────────────────────────────────────────────────
 
 class GridClient:
-    def __init__(self, base_url: str, token: str, max_parallel: int):
+    def __init__(self, base_url: str, token: str, worker_id: str, max_parallel: int):
         self.base_url = base_url.rstrip("/")
         self.api = f"{self.base_url}/api/cluster/contributor"
         self.token = token
-        self.token_hash = _hash_token(token)
-        self.worker_id = _get_worker_id()
+        self.worker_id = worker_id
         self.max_parallel = max_parallel
-        self.session = requests.Session()
-        self.session.headers["Content-Type"] = "application/json"
-        self.session.headers["X-Worker-Token"] = self.token_hash
+        self.session_headers = {
+            "Content-Type": "application/json",
+            "X-Worker-Token": self.token,      # raw token — server hashes it
+            "X-Worker-Id": self.worker_id,
+        }
 
     def register(self) -> bool:
         info = _get_system_info()
         info["worker_id"] = self.worker_id
-        info["token_hash"] = self.token_hash
         info["max_parallel"] = self.max_parallel
-        try:
-            r = self.session.post(f"{self.api}/register", json=info, timeout=10)
-            if r.status_code == 200:
-                log.info("Registered as %s (%d CPUs, %.1f GB RAM)",
-                         self.worker_id, info["cpu_count"], info["ram_gb"])
-                return True
-            log.warning("Registration failed: %d %s", r.status_code, r.text[:200])
-            return False
-        except Exception as e:
-            log.warning("Registration error: %s", e)
-            return False
+        status, data = _http_post(
+            f"{self.api}/register", self.session_headers, info, timeout=10,
+        )
+        if status == 200:
+            log.info("Registered as %s (%d CPUs, %.1f GB RAM)",
+                     self.worker_id, info["cpu_count"], info["ram_gb"])
+            return True
+        log.warning("Registration failed: %d %s", status,
+                     str(data.get("error", data))[:200])
+        return False
 
     def heartbeat(self) -> bool:
-        try:
-            r = self.session.post(f"{self.api}/heartbeat", json={
+        status, _ = _http_post(
+            f"{self.api}/heartbeat", self.session_headers, {
                 "worker_id": self.worker_id,
-                "token_hash": self.token_hash,
                 "status": "online",
-            }, timeout=5)
-            return r.status_code == 200
-        except Exception:
-            return False
+            }, timeout=5,
+        )
+        return status == 200
 
     def dequeue(self, count: int = 1) -> list:
-        try:
-            r = self.session.post(f"{self.api}/dequeue", json={
+        status, data = _http_post(
+            f"{self.api}/dequeue", self.session_headers, {
                 "worker_id": self.worker_id,
-                "token_hash": self.token_hash,
                 "max_jobs": count,
-            }, timeout=10)
-            if r.status_code == 200:
-                data = r.json()
-                return data.get("jobs", [])
-            return []
-        except Exception:
-            return []
+            }, timeout=10,
+        )
+        if status == 200:
+            return data.get("jobs", [])
+        return []
 
     def complete(self, job_id: str, result: dict = None, error: str = None,
                  duration: float = 0) -> bool:
-        try:
-            payload = {
-                "worker_id": self.worker_id,
-                "token_hash": self.token_hash,
-                "job_id": job_id,
-                "status": "completed" if not error else "failed",
-                "result": json.dumps(result or {}),
-                "error": error or "",
-                "duration_sec": round(duration, 2),
-            }
-            r = self.session.post(f"{self.api}/complete", json=payload, timeout=10)
-            return r.status_code == 200
-        except Exception:
-            return False
+        payload = {
+            "worker_id": self.worker_id,
+            "job_id": job_id,
+            "status": "completed" if not error else "failed",
+            "result": json.dumps(result or {}),
+            "error": error or "",
+            "duration_sec": round(duration, 2),
+        }
+        status, _ = _http_post(
+            f"{self.api}/complete", self.session_headers, payload, timeout=10,
+        )
+        return status == 200
 
 
 # ── Job Execution ───────────────────────────────────────────────
@@ -221,17 +342,52 @@ def main():
     parser = argparse.ArgumentParser(description="Aura Alpha Grid Worker")
     parser.add_argument("--coordinator-url", default=DEFAULT_COORDINATOR)
     parser.add_argument("--max-parallel", type=int, default=4)
-    parser.add_argument("--token", default=WORKER_TOKEN)
+    parser.add_argument("--token", default=None)
     args = parser.parse_args()
+
+    # ── Resolve token + worker_id ────────────────────────────────
+    token = None
+    worker_id = None
+
+    if args.token:
+        # Explicit --token flag overrides everything
+        token = args.token
+        worker_id = _get_worker_id()
+        log.info("Using CLI-provided token")
+    else:
+        # Check for GRID_WORKER_TOKEN env var
+        env_token = os.getenv("GRID_WORKER_TOKEN")
+        if env_token:
+            token = env_token
+            worker_id = _get_worker_id()
+            log.info("Using GRID_WORKER_TOKEN from environment")
+        else:
+            # Try loading stored auto-provisioned token
+            stored = _load_stored_token()
+            if stored:
+                token = stored["token"]
+                worker_id = stored["worker_id"]
+                log.info("Loaded stored token for worker_id=%s", worker_id)
+            else:
+                # Auto-provision a new unique token from the server
+                log.info("No token found — auto-provisioning from coordinator...")
+                try:
+                    provisioned = _auto_provision(args.coordinator_url)
+                    token = provisioned["token"]
+                    worker_id = provisioned["worker_id"]
+                    _save_token(provisioned)
+                except Exception as e:
+                    log.error("Auto-provision failed: %s. Cannot start without a token.", e)
+                    sys.exit(1)
 
     log.info("=" * 60)
     log.info("Aura Alpha Grid Worker starting")
     log.info("Coordinator: %s", args.coordinator_url)
     log.info("Max parallel: %d", args.max_parallel)
-    log.info("Worker ID: %s", _get_worker_id())
+    log.info("Worker ID: %s", worker_id)
     log.info("=" * 60)
 
-    client = GridClient(args.coordinator_url, args.token, args.max_parallel)
+    client = GridClient(args.coordinator_url, token, worker_id, args.max_parallel)
 
     # Register with retry
     for attempt in range(5):

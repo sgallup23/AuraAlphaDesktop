@@ -855,12 +855,20 @@ fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result<Chi
         .try_clone()
         .map_err(|e| format!("Cannot clone log file: {}", e))?;
 
+    // Set GRID_TOKEN_DIR so the Python worker stores/loads its provisioned
+    // token in the app's data directory (not inside the .app bundle).
+    let token_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local").join("share"))
+        .join("cc.auraalpha.desktop");
+    let _ = std::fs::create_dir_all(&token_dir);
+
     Command::new(&python)
         .arg(script.to_string_lossy().as_ref())
         .arg("--coordinator-url")
         .arg(coordinator_url)
         .arg("--max-parallel")
         .arg(max_parallel.to_string())
+        .env("GRID_TOKEN_DIR", token_dir.to_string_lossy().as_ref())
         .stdout(log_file)
         .stderr(log_err)
         .spawn()
