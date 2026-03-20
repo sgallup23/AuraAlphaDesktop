@@ -1,62 +1,35 @@
-name: Release Desktop App
+name: Build & Release Desktop App
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version tag (e.g. v1.0.0)'
-        required: true
 
 permissions:
   contents: write
 
 jobs:
-  create-release:
-    runs-on: ubuntu-latest
-    outputs:
-      release_id: ${{ steps.create.outputs.id }}
-    steps:
-      - name: Create GitHub Release
-        id: create
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: 'Aura Alpha Desktop ${{ github.ref_name }}'
-          body: |
-            Desktop application for Aura Alpha Trading Desk.
-
-            **Downloads:**
-            - Windows: `.msi` or `.exe` (NSIS installer)
-            - macOS: `.dmg`
-            - Linux: `.deb` or `.AppImage`
-          draft: false
-          prerelease: false
-
   build:
-    needs: create-release
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            name: linux-amd64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            name: windows-amd64
           - platform: macos-latest
             target: aarch64-apple-darwin
-            name: macos-arm64
-          - platform: macos-latest
-            target: x86_64-apple-darwin
-            name: macos-amd64
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -67,150 +40,18 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Bundle portable Python
-        shell: bash
-        run: |
-          # Download standalone Python from python-build-standalone (portable, relocatable)
-          PY_VER="3.12.9"
-          PY_TAG="20250317"
-          DEST="src-tauri/sidecar/python"
-          mkdir -p "$DEST"
-
-          case "${{ matrix.target }}" in
-            aarch64-apple-darwin)
-              URL="https://github.com/indygreg/python-build-standalone/releases/download/${PY_TAG}/cpython-${PY_VER}+${PY_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
-              ;;
-            x86_64-apple-darwin)
-              URL="https://github.com/indygreg/python-build-standalone/releases/download/${PY_TAG}/cpython-${PY_VER}+${PY_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
-              ;;
-            x86_64-unknown-linux-gnu)
-              URL="https://github.com/indygreg/python-build-standalone/releases/download/${PY_TAG}/cpython-${PY_VER}+${PY_TAG}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
-              ;;
-            x86_64-pc-windows-msvc)
-              URL="https://github.com/indygreg/python-build-standalone/releases/download/${PY_TAG}/cpython-${PY_VER}+${PY_TAG}-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
-              ;;
-          esac
-
-          echo "Downloading portable Python from: $URL"
-          curl -sL "$URL" | tar xz -C "$DEST" --strip-components=1
-
-          # Ensure execute permissions on the Python binary and bin/ directory.
-          # Without this, macOS Gatekeeper may strip +x when the .app is downloaded,
-          # and the Tauri bundler may not preserve permissions from the tarball.
-          if [ -d "$DEST/bin" ]; then
-            chmod -R +x "$DEST/bin/"
-          fi
-
-          # Verify
-          if [ -f "$DEST/bin/python3" ]; then
-            echo "Bundled Python: $("$DEST/bin/python3" --version)"
-          elif [ -f "$DEST/python.exe" ]; then
-            echo "Bundled Python (Windows): found"
-          else
-            echo "WARNING: Python binary not found in $DEST"
-            ls -la "$DEST"/
-          fi
-
       - name: Build Tauri app
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx tauri build --target ${{ matrix.target }}
-
-      - name: Create updater bundles and sign
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
-          UPDATER_DIR="updater-artifacts"
-          mkdir -p "$UPDATER_DIR"
-
-          # Install tauri-cli for signing
-          cargo install tauri-cli --version "^2" 2>/dev/null || true
-
-          # macOS: create .app.tar.gz and sign it
-          if [ -d "$BUNDLE_DIR/macos" ]; then
-            APP=$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app" -type d | head -1)
-            if [ -n "$APP" ]; then
-              TARBALL="$UPDATER_DIR/$(basename "$APP").tar.gz"
-              echo "Creating macOS updater bundle: $TARBALL"
-              tar -czf "$TARBALL" -C "$(dirname "$APP")" "$(basename "$APP")"
-              if command -v cargo-tauri &>/dev/null; then
-                cargo tauri signer sign "$TARBALL" 2>/dev/null || true
-              fi
-            fi
-          fi
-
-          # Linux: create .AppImage.tar.gz and sign it
-          APPIMAGE=$(find "$BUNDLE_DIR" -maxdepth 2 -name "*.AppImage" -type f 2>/dev/null | head -1)
-          if [ -n "$APPIMAGE" ]; then
-            TARBALL="$UPDATER_DIR/$(basename "$APPIMAGE").tar.gz"
-            echo "Creating Linux updater bundle: $TARBALL"
-            tar -czf "$TARBALL" -C "$(dirname "$APPIMAGE")" "$(basename "$APPIMAGE")"
-            if command -v cargo-tauri &>/dev/null; then
-              cargo tauri signer sign "$TARBALL" 2>/dev/null || true
-            fi
-          fi
-
-          # Windows: create .nsis.zip and sign it
-          NSIS=$(find "$BUNDLE_DIR" -maxdepth 2 -name "*-setup.exe" -type f 2>/dev/null | head -1)
-          if [ -n "$NSIS" ]; then
-            ZIPFILE="$UPDATER_DIR/$(basename "$NSIS" .exe).nsis.zip"
-            echo "Creating Windows updater bundle: $ZIPFILE"
-            if command -v zip &>/dev/null; then
-              (cd "$(dirname "$NSIS")" && zip "$OLDPWD/$ZIPFILE" "$(basename "$NSIS")")
-            else
-              # PowerShell fallback for Windows runners
-              powershell -c "Compress-Archive -Path '$NSIS' -DestinationPath '$ZIPFILE'" 2>/dev/null || true
-            fi
-            if command -v cargo-tauri &>/dev/null; then
-              cargo tauri signer sign "$ZIPFILE" 2>/dev/null || true
-            fi
-          fi
-
-          echo "=== Updater artifacts ==="
-          ls -la "$UPDATER_DIR"/ 2>/dev/null || echo "(empty)"
-
-      - name: Upload all artifacts to release
-        shell: bash
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.ref_name }}"
-          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
-          UPDATER_DIR="updater-artifacts"
-
-          # Upload installers from bundle dir
-          find "$BUNDLE_DIR" -maxdepth 2 -type f \
-            \( -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.deb" \
-               -o -name "*.rpm" -o -name "*.AppImage" \) \
-            -exec sh -c '
-              for file; do
-                name=$(basename "$file")
-                echo "Uploading: $name"
-                gh release upload "'"$TAG"'" "$file" --clobber || echo "Warning: failed to upload $name"
-              done
-            ' _ {} +
-
-          # Upload updater bundles + signatures
-          if [ -d "$UPDATER_DIR" ]; then
-            for file in "$UPDATER_DIR"/*; do
-              [ -f "$file" ] || continue
-              name=$(basename "$file")
-              echo "Uploading updater artifact: $name"
-              gh release upload "$TAG" "$file" --clobber || echo "Warning: failed to upload $name"
-            done
-          fi
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Aura Alpha v__VERSION__'
+          releaseBody: 'Download the installer for your platform below.'
+          releaseDraft: true
+          prerelease: false
