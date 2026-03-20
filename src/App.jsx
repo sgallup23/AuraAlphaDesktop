@@ -17,7 +17,7 @@ class ErrorBoundary extends Component {
           await invoke('clear_auth_token').catch(() => {});
           await invoke('save_workspace', { name: 'default', layoutJson: '{}' }).catch(() => {});
           // Also clear any corrupted preferences
-          await invoke('save_preferences', { prefsJson: '{}' }).catch(() => {});
+          await invoke('save_preference', { key: 'reset', value: true }).catch(() => {});
         } catch {}
         localStorage.clear();
         sessionStorage.clear();
