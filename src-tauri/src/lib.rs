@@ -5,6 +5,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::process::{Child, Command};
 use std::sync::Mutex;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -923,118 +925,94 @@ fn find_python_for_worker(script: &std::path::Path) -> (String, bool) {
 /// Includes retry logic (up to 3 attempts with 5s delay) and Gatekeeper
 /// permission fixes on macOS to handle quarantine on downloaded .app bundles.
 fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result<Child, String> {
-    let script = find_research_worker_script()
-        .ok_or_else(|| "research_worker.py not found".to_string())?;
+    // Find the compiled grid worker sidecar binary
+    let binary_name = if cfg!(target_os = "windows") {
+        "aura-grid-worker.exe"
+    } else {
+        "aura-grid-worker"
+    };
 
-    // Fix Gatekeeper permissions on macOS before resolving the Python binary.
-    // Downloaded .app bundles get quarantine xattrs and stripped execute bits,
-    // which prevents the bundled Python from launching.
+    let binary = find_sidecar_binary(binary_name)
+        .or_else(|| find_research_worker_script()) // fallback to Python script
+        .ok_or_else(|| "Grid worker binary not found".to_string())?;
+
+    let use_python = binary.extension().map_or(false, |ext| ext == "py");
+
+    // Fix Gatekeeper permissions on macOS
     #[cfg(target_os = "macos")]
-    if let Some(script_dir) = script.parent() {
-        fix_gatekeeper_permissions(script_dir);
+    if let Some(dir) = binary.parent() {
+        fix_gatekeeper_permissions(dir);
     }
 
-    let (python, is_bundled) = find_python_for_worker(&script);
-
-    // On non-macOS Unix, ensure the bundled binary is executable
-    #[cfg(not(target_os = "macos"))]
-    if is_bundled {
-        ensure_python_executable(std::path::Path::new(&python));
+    // Ensure executable on Unix
+    #[cfg(unix)]
+    if !use_python {
+        let _ = std::fs::set_permissions(&binary, std::os::unix::fs::PermissionsExt::from_mode(0o755));
     }
 
-    // Create log directory in user-writable location (not inside .app bundle or AppImage)
-    let log_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local").join("share"))
-        .join("cc.auraalpha.desktop")
-        .join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
-
-    // Set GRID_TOKEN_DIR so the Python worker stores/loads its provisioned
-    // token in the app's data directory (not inside the .app bundle).
-    let token_dir = dirs::data_local_dir()
+    // Create log + token directories
+    let data_dir = dirs::data_local_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local").join("share"))
         .join("cc.auraalpha.desktop");
-    let _ = std::fs::create_dir_all(&token_dir);
+    let log_dir = data_dir.join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let _ = std::fs::create_dir_all(&data_dir);
 
-    // Retry loop: attempt spawn up to 3 times with 5-second delay between attempts.
-    // This handles transient failures such as the OS still releasing quarantine locks
-    // or the file system not yet reflecting permission changes.
-    let max_attempts = 3;
-    let mut last_error = String::new();
+    let log_file = std::fs::File::create(log_dir.join("research_worker.log"))
+        .map_err(|e| format!("Cannot create log file: {}", e))?;
+    let log_err = log_file.try_clone()
+        .map_err(|e| format!("Cannot clone log file: {}", e))?;
 
-    for attempt in 1..=max_attempts {
-        let log_file = match std::fs::File::create(log_dir.join("research_worker.log")) {
-            Ok(f) => f,
-            Err(e) => return Err(format!("Cannot create log file: {}", e)),
-        };
-        let log_err = match log_file.try_clone() {
-            Ok(f) => f,
-            Err(e) => return Err(format!("Cannot clone log file: {}", e)),
-        };
-
-        match Command::new(&python)
-            .arg(script.to_string_lossy().as_ref())
-            .arg("--coordinator-url")
-            .arg(coordinator_url)
-            .arg("--max-parallel")
-            .arg(max_parallel.to_string())
-            .env("GRID_TOKEN_DIR", token_dir.to_string_lossy().as_ref())
-            .stdout(log_file)
-            .stderr(log_err)
+    if use_python {
+        // Legacy Python path
+        let (python, _) = find_python_for_worker(&binary);
+        Command::new(&python)
+            .arg(binary.to_string_lossy().as_ref())
+            .arg("--coordinator-url").arg(coordinator_url)
+            .arg("--max-parallel").arg(max_parallel.to_string())
+            .arg("--verbose")
+            .env("GRID_TOKEN_DIR", data_dir.to_string_lossy().as_ref())
+            .stdout(log_file).stderr(log_err)
             .spawn()
-        {
-            Ok(child) => return Ok(child),
-            Err(e) => {
-                last_error = format!(
-                    "Spawn attempt {}/{} failed — python='{}', script='{}', error='{}'",
-                    attempt, max_attempts, python, script.display(), e
-                );
-                log::error!("{}", last_error);
-                if attempt < max_attempts {
-                    log::info!("Retrying research worker spawn in 5 seconds...");
-                    std::thread::sleep(std::time::Duration::from_secs(5));
-                }
+            .map_err(|e| format!("Failed to start grid worker (Python): {}", e))
+    } else {
+        // Compiled sidecar binary — no Python needed
+        Command::new(binary.to_string_lossy().as_ref())
+            .arg("--coordinator-url").arg(coordinator_url)
+            .arg("--max-parallel").arg(max_parallel.to_string())
+            .arg("--verbose")
+            .env("GRID_TOKEN_DIR", data_dir.to_string_lossy().as_ref())
+            .stdout(log_file).stderr(log_err)
+            .spawn()
+            .map_err(|e| format!("Failed to start grid worker: {}", e))
+    }
+}
+
+fn find_sidecar_binary(name: &str) -> Option<std::path::PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            // Next to binary (Windows/Linux installed)
+            let candidate = exe_dir.join(name);
+            if candidate.exists() { return Some(candidate); }
+            // macOS: Contents/MacOS/ → Contents/Resources/
+            let macos = exe_dir.join("../Resources").join(name);
+            if macos.exists() { return Some(macos); }
+            // Linux .deb: /usr/share/<id>/
+            let deb = std::path::Path::new("/usr/share/cc.auraalpha.desktop").join(name);
+            if deb.exists() { return Some(deb); }
+            // Dev: walk up to project root
+            for ancestor in exe_dir.ancestors() {
+                let dev = ancestor.join("src-tauri").join("binaries").join(name);
+                if dev.exists() { return Some(dev); }
             }
         }
     }
-
-    // All retries exhausted — if the bundled Python failed, try system python3 as a last resort
-    if is_bundled {
-        log::warn!(
-            "Bundled Python failed after {} attempts. Falling back to system python3.",
-            max_attempts
-        );
-        let log_file = std::fs::File::create(log_dir.join("research_worker.log"))
-            .map_err(|e| format!("Cannot create log file: {}", e))?;
-        let log_err = log_file
-            .try_clone()
-            .map_err(|e| format!("Cannot clone log file: {}", e))?;
-
-        match Command::new("python3")
-            .arg(script.to_string_lossy().as_ref())
-            .arg("--coordinator-url")
-            .arg(coordinator_url)
-            .arg("--max-parallel")
-            .arg(max_parallel.to_string())
-            .env("GRID_TOKEN_DIR", token_dir.to_string_lossy().as_ref())
-            .stdout(log_file)
-            .stderr(log_err)
-            .spawn()
-        {
-            Ok(child) => {
-                log::info!("Research worker started with system python3 (fallback).");
-                return Ok(child);
-            }
-            Err(e) => {
-                log::error!("System python3 fallback also failed: {}", e);
-            }
-        }
+    // Home dir fallback
+    if let Some(home) = dirs::home_dir() {
+        let candidate = home.join("AuraAlphaDesktop").join("src-tauri").join("binaries").join(name);
+        if candidate.exists() { return Some(candidate); }
     }
-
-    Err(format!(
-        "Research worker failed to start after {} attempts. Last error: {}",
-        max_attempts, last_error
-    ))
+    None
 }
 
 /// IPC command: start the research worker sidecar

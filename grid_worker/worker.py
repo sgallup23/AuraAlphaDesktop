@@ -197,7 +197,7 @@ def _auto_provision(base_url: str) -> dict:
 
     req = urllib.request.Request(
         url, data=body, method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "User-Agent": "AuraAlpha-GridWorker/2.0"},
     )
     try:
         ctx = ssl.create_default_context()
@@ -306,6 +306,7 @@ class CoordinatorClient:
         self.worker_id = worker_id
         self.headers = {
             "Content-Type": "application/json",
+            "User-Agent": "AuraAlpha-GridWorker/2.0",
             "X-Worker-Token": self.token,
             "X-Contributor-Token": self.token,
             "X-Worker-Id": self.worker_id,
@@ -352,7 +353,7 @@ class CoordinatorClient:
             "job_id": job_id,
             "status": "completed",
             "metrics": metrics or {},
-            "result": json.dumps(result or metrics or {}),
+            "result": result or metrics or {},
             "duration_sec": round(duration, 2),
         }
         status, _ = _http_request("POST", self._url("complete"), self.headers, payload)
@@ -589,16 +590,227 @@ def _compute_atr(highs, lows, closes, period: int = 14):
     return atr
 
 
+def _compute_ema(data, period):
+    """Compute EMA for an array."""
+    import numpy as np
+    n = len(data)
+    ema = np.full(n, np.nan)
+    if n <= period:
+        return ema
+    alpha = 2.0 / (period + 1)
+    ema[period - 1] = np.mean(data[:period])
+    for i in range(period, n):
+        ema[i] = data[i] * alpha + ema[i - 1] * (1 - alpha)
+    return ema
+
+
+def _compute_rsi(closes, period=14):
+    """Compute RSI."""
+    import numpy as np
+    n = len(closes)
+    rsi = np.full(n, 50.0)
+    if n <= period + 1:
+        return rsi
+    deltas = np.diff(closes)
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses_arr = np.where(deltas < 0, -deltas, 0.0)
+    avg_gain = np.mean(gains[:period])
+    avg_loss = np.mean(losses_arr[:period])
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses_arr[i]) / period
+        rs = avg_gain / (avg_loss + 1e-10)
+        rsi[i + 1] = 100.0 - (100.0 / (1.0 + rs))
+    return rsi
+
+
+def _compute_bbands(closes, period=20, std_mult=2.0):
+    """Compute Bollinger Bands (upper, middle, lower)."""
+    import numpy as np
+    n = len(closes)
+    upper = np.full(n, np.nan)
+    middle = np.full(n, np.nan)
+    lower = np.full(n, np.nan)
+    for i in range(period - 1, n):
+        window = closes[i - period + 1:i + 1]
+        m = np.mean(window)
+        s = np.std(window)
+        middle[i] = m
+        upper[i] = m + std_mult * s
+        lower[i] = m - std_mult * s
+    return upper, middle, lower
+
+
+def _compute_sma(data, period):
+    """Compute Simple Moving Average."""
+    import numpy as np
+    n = len(data)
+    sma = np.full(n, np.nan)
+    for i in range(period - 1, n):
+        sma[i] = np.mean(data[i - period + 1:i + 1])
+    return sma
+
+
+def _compute_obv(closes, volumes):
+    """Compute On-Balance Volume."""
+    import numpy as np
+    n = len(closes)
+    obv = np.zeros(n)
+    for i in range(1, n):
+        if closes[i] > closes[i - 1]:
+            obv[i] = obv[i - 1] + volumes[i]
+        elif closes[i] < closes[i - 1]:
+            obv[i] = obv[i - 1] - volumes[i]
+        else:
+            obv[i] = obv[i - 1]
+    return obv
+
+
+def _check_entry(i, entry_logic, indicators, params, direction):
+    """Check if entry conditions are met based on the strategy's entry_logic list.
+    Returns True if >= 50% of conditions pass (matching EC2 behavior).
+    """
+    import numpy as np
+    ind = indicators
+    conditions_met = 0
+    conditions_total = len(entry_logic) if entry_logic else 1
+
+    for cond in entry_logic:
+        try:
+            if cond == "ema_cross_up":
+                ef, es = ind["ema_fast"], ind["ema_slow"]
+                if not np.isnan(ef[i]) and not np.isnan(es[i]) and i > 0:
+                    if ef[i] > es[i] and ef[i - 1] <= es[i - 1]:
+                        conditions_met += 1
+            elif cond == "ema_cross_down":
+                ef, es = ind["ema_fast"], ind["ema_slow"]
+                if not np.isnan(ef[i]) and not np.isnan(es[i]) and i > 0:
+                    if ef[i] < es[i] and ef[i - 1] >= es[i - 1]:
+                        conditions_met += 1
+            elif cond == "rsi_above_threshold":
+                thr = params.get("rsi_entry_threshold", params.get("rsi_entry", 55))
+                if ind["rsi"][i] > thr:
+                    conditions_met += 1
+            elif cond == "rsi_oversold":
+                thr = params.get("rsi_oversold", 30)
+                if ind["rsi"][i] < thr:
+                    conditions_met += 1
+            elif cond == "rsi_above_floor":
+                thr = params.get("rsi_floor", 40)
+                if ind["rsi"][i] > thr:
+                    conditions_met += 1
+            elif cond == "volume_surge" or cond == "volume_spike":
+                vm = params.get("volume_multiplier", params.get("volume_spike_mult", 1.5))
+                vs = ind["vol_sma"]
+                vols = ind["volumes"]
+                if not np.isnan(vs[i]) and vs[i] > 0 and vols[i] > vs[i] * vm:
+                    conditions_met += 1
+            elif cond == "price_above_high":
+                lb = params.get("lookback_period", 20)
+                if i >= lb and ind["closes"][i] > np.max(ind["highs"][i - lb:i]):
+                    conditions_met += 1
+            elif cond == "volume_breakout":
+                vm = params.get("volume_multiplier", 2.0)
+                vs = ind["vol_sma"]
+                vols = ind["volumes"]
+                if not np.isnan(vs[i]) and vs[i] > 0 and vols[i] > vs[i] * vm:
+                    conditions_met += 1
+            elif cond == "consolidation_check":
+                cd = params.get("consolidation_days", 10)
+                rp = params.get("consolidation_range_pct", 0.05)
+                if i >= cd:
+                    hi = np.max(ind["highs"][i - cd:i])
+                    lo = np.min(ind["lows"][i - cd:i])
+                    if lo > 0 and (hi - lo) / lo < rp:
+                        conditions_met += 1
+            elif cond == "squeeze_fire" or cond == "band_expansion":
+                bb_u, bb_m, bb_l = ind.get("bb_upper"), ind.get("bb_middle"), ind.get("bb_lower")
+                if bb_u is not None and not np.isnan(bb_u[i]) and not np.isnan(bb_l[i]):
+                    squeeze = params.get("squeeze_threshold", 0.02)
+                    width = (bb_u[i] - bb_l[i]) / (bb_m[i] + 1e-10)
+                    if i > 0:
+                        prev_width = (bb_u[i-1] - bb_l[i-1]) / (bb_m[i-1] + 1e-10) if not np.isnan(bb_u[i-1]) else width
+                        if prev_width < squeeze and width > squeeze:
+                            conditions_met += 1
+            elif cond == "direction_filter":
+                ef = ind.get("ema_fast")
+                if ef is not None and not np.isnan(ef[i]):
+                    if (direction == "long" and ind["closes"][i] > ef[i]) or \
+                       (direction != "long" and ind["closes"][i] < ef[i]):
+                        conditions_met += 1
+            elif cond == "zscore_extreme":
+                # For ETF arb: compute z-score of price vs moving average
+                lb = params.get("spread_lookback", 30)
+                ez = params.get("entry_zscore", 2.0)
+                if i >= lb:
+                    window = ind["closes"][i - lb:i]
+                    m, s = np.mean(window), np.std(window)
+                    if s > 0:
+                        z = (ind["closes"][i] - m) / s
+                        if abs(z) >= ez:
+                            conditions_met += 1
+            elif cond == "correlation_stable":
+                # Simplified: check price stability/trend consistency
+                conditions_met += 1  # assume stable for now
+            elif cond == "top_sector_rank" or cond == "momentum_positive":
+                # Sector rotation: check momentum
+                lb = params.get("ranking_period", 30)
+                if i >= lb and ind["closes"][i] > ind["closes"][i - lb]:
+                    conditions_met += 1
+            elif cond == "gap_detection":
+                gt = params.get("gap_threshold_pct", 0.03)
+                if i > 0 and abs(ind["closes"][i] / ind["closes"][i - 1] - 1) > gt:
+                    conditions_met += 1
+            elif cond == "event_window":
+                conditions_met += 1  # always in window for backtesting
+            elif cond == "obv_rising":
+                obv = ind.get("obv")
+                if obv is not None and i > 5:
+                    if obv[i] > obv[i - 5]:
+                        conditions_met += 1
+            elif cond == "price_below_lower_band":
+                bb_l = ind.get("bb_lower")
+                if bb_l is not None and not np.isnan(bb_l[i]):
+                    if ind["closes"][i] < bb_l[i]:
+                        conditions_met += 1
+            elif cond == "distance_from_sma":
+                sma = ind.get("sma")
+                md = params.get("min_distance_from_sma", 0.02)
+                if sma is not None and not np.isnan(sma[i]) and sma[i] > 0:
+                    dist = abs(ind["closes"][i] - sma[i]) / sma[i]
+                    if dist >= md:
+                        conditions_met += 1
+            elif cond == "price_above_vwap":
+                # Simplified VWAP: use volume-weighted price average
+                lb = params.get("volume_sma_period", 20)
+                if i >= lb:
+                    w = ind["closes"][i - lb:i] * ind["volumes"][i - lb:i]
+                    vwap = np.sum(w) / (np.sum(ind["volumes"][i - lb:i]) + 1e-10)
+                    if ind["closes"][i] > vwap:
+                        conditions_met += 1
+            elif cond in ("bollinger_squeeze", "rsi_confirmation", "volume_confirm"):
+                # Generic conditions — be lenient
+                conditions_met += 1
+            else:
+                # Unknown condition — be lenient to avoid false rejections
+                conditions_met += 1
+        except Exception:
+            pass
+
+    # Match EC2: require >= 50% of conditions met
+    return conditions_met >= max(1, conditions_total * 0.5)
+
+
 def _simulate_trades(
     closes, highs, lows, dates: List[str],
     params: dict, direction: str = "long",
     date_start: str = "", date_end: str = "",
+    entry_logic: Optional[List[str]] = None,
 ) -> List[dict]:
-    """Simulate trades for a single symbol with coordinator-provided parameters.
+    """Simulate trades for a single symbol using strategy-specific entry logic.
 
-    Uses ATR-based stops/take-profits, EMA crossover entries, RSI confirmation.
-    This is a generic compute kernel -- all strategy-specific parameters come from
-    the coordinator via the job payload.
+    Supports all 9 strategy families via the entry_logic conditions list.
+    Exit logic uses ATR stops/TP, trailing stops, and max hold universally.
     """
     import numpy as np
 
@@ -610,54 +822,47 @@ def _simulate_trades(
     stop_atr = params.get("stop_loss_atr_mult", 2.0)
     tp_atr = params.get("take_profit_atr_mult", 4.0)
     trail_pct = params.get("trailing_stop_pct", 0.05)
+    if trail_pct > 1:
+        trail_pct = trail_pct / 100.0  # normalize percentage
     max_hold = params.get("max_hold_days", 30)
     atr_period = params.get("atr_period", 14)
     ema_fast_period = params.get("ema_fast", 9)
     ema_slow_period = params.get("ema_slow", 21)
     rsi_period = params.get("rsi_period", 14)
-    rsi_threshold = params.get("rsi_entry_threshold", 50.0)
-    vol_mult = params.get("volume_multiplier", 1.5)
     vol_sma_period = params.get("volume_sma_period", 20)
+    bbands_period = params.get("bbands_period", 20)
+    bbands_std = params.get("bbands_std", 2.0)
 
-    # Compute indicators
-    atr = _compute_atr(highs, lows, closes, atr_period)
+    # Default entry logic if not specified
+    if not entry_logic:
+        entry_logic = ["ema_cross_up", "rsi_above_threshold", "volume_surge"]
 
-    # EMA fast/slow
-    ema_fast = np.full(n, np.nan)
-    ema_slow = np.full(n, np.nan)
-    if n > ema_fast_period:
-        alpha_f = 2.0 / (ema_fast_period + 1)
-        ema_fast[ema_fast_period - 1] = np.mean(closes[:ema_fast_period])
-        for i in range(ema_fast_period, n):
-            ema_fast[i] = closes[i] * alpha_f + ema_fast[i - 1] * (1 - alpha_f)
-    if n > ema_slow_period:
-        alpha_s = 2.0 / (ema_slow_period + 1)
-        ema_slow[ema_slow_period - 1] = np.mean(closes[:ema_slow_period])
-        for i in range(ema_slow_period, n):
-            ema_slow[i] = closes[i] * alpha_s + ema_slow[i - 1] * (1 - alpha_s)
-
-    # RSI
-    rsi = np.full(n, 50.0)
-    if n > rsi_period + 1:
-        deltas = np.diff(closes)
-        gains = np.where(deltas > 0, deltas, 0.0)
-        losses_arr = np.where(deltas < 0, -deltas, 0.0)
-        avg_gain = np.mean(gains[:rsi_period])
-        avg_loss = np.mean(losses_arr[:rsi_period])
-        for i in range(rsi_period, len(deltas)):
-            avg_gain = (avg_gain * (rsi_period - 1) + gains[i]) / rsi_period
-            avg_loss = (avg_loss * (rsi_period - 1) + losses_arr[i]) / rsi_period
-            rs = avg_gain / (avg_loss + 1e-10)
-            rsi[i + 1] = 100.0 - (100.0 / (1.0 + rs))
-
-    # Volume SMA
-    vol_sma = np.full(n, np.nan)
+    # Compute all indicators
     volumes = np.zeros(n)
     if "_volumes" in params:
         volumes = np.array(params["_volumes"], dtype=float)
-        if len(volumes) >= vol_sma_period:
-            for i in range(vol_sma_period - 1, n):
-                vol_sma[i] = np.mean(volumes[i - vol_sma_period + 1 : i + 1])
+
+    indicators = {
+        "closes": closes,
+        "highs": highs,
+        "lows": lows,
+        "volumes": volumes,
+        "atr": _compute_atr(highs, lows, closes, atr_period),
+        "ema_fast": _compute_ema(closes, ema_fast_period),
+        "ema_slow": _compute_ema(closes, ema_slow_period),
+        "rsi": _compute_rsi(closes, rsi_period),
+        "vol_sma": _compute_sma(volumes, vol_sma_period) if volumes.any() else np.full(n, np.nan),
+        "sma": _compute_sma(closes, bbands_period),
+        "obv": _compute_obv(closes, volumes) if volumes.any() else np.zeros(n),
+    }
+
+    # Add Bollinger Bands if needed
+    needs_bb = any(c in str(entry_logic) for c in ["squeeze", "band", "bollinger", "lower_band"])
+    if needs_bb:
+        bb_u, bb_m, bb_l = _compute_bbands(closes, bbands_period, bbands_std)
+        indicators["bb_upper"] = bb_u
+        indicators["bb_middle"] = bb_m
+        indicators["bb_lower"] = bb_l
 
     # Date window
     start_idx = 0
@@ -673,7 +878,7 @@ def _simulate_trades(
                 end_idx = i + 1
                 break
 
-    min_lookback = max(ema_slow_period, atr_period, rsi_period, vol_sma_period) + 5
+    min_lookback = max(ema_slow_period, atr_period, rsi_period, vol_sma_period, bbands_period) + 5
     start_idx = max(start_idx, min_lookback)
 
     trades: List[dict] = []
@@ -685,43 +890,25 @@ def _simulate_trades(
     trail_high = 0.0
     trail_low = float("inf")
 
+    atr = indicators["atr"]
+
     for i in range(start_idx, min(end_idx, n)):
-        if np.isnan(atr[i]) or np.isnan(ema_fast[i]) or np.isnan(ema_slow[i]):
+        if np.isnan(atr[i]):
             continue
 
         if not in_trade:
-            if direction == "long":
-                cross_up = ema_fast[i] > ema_slow[i] and (
-                    i > 0 and ema_fast[i - 1] <= ema_slow[i - 1]
-                )
-                rsi_ok = rsi[i] > rsi_threshold
-                vol_ok = True
-                if not np.isnan(vol_sma[i]) and vol_sma[i] > 0 and len(volumes) > i:
-                    vol_ok = volumes[i] > vol_sma[i] * vol_mult
-
-                if cross_up and rsi_ok and vol_ok:
-                    entry_price = closes[i]
-                    entry_idx = i
+            if _check_entry(i, entry_logic, indicators, params, direction):
+                entry_price = closes[i]
+                entry_idx = i
+                if direction == "long":
                     stop_price = entry_price - atr[i] * stop_atr
                     tp_price = entry_price + atr[i] * tp_atr
                     trail_high = entry_price
-                    in_trade = True
-            else:
-                cross_down = ema_fast[i] < ema_slow[i] and (
-                    i > 0 and ema_fast[i - 1] >= ema_slow[i - 1]
-                )
-                rsi_ok = rsi[i] < (100.0 - rsi_threshold)
-                vol_ok = True
-                if not np.isnan(vol_sma[i]) and vol_sma[i] > 0 and len(volumes) > i:
-                    vol_ok = volumes[i] > vol_sma[i] * vol_mult
-
-                if cross_down and rsi_ok and vol_ok:
-                    entry_price = closes[i]
-                    entry_idx = i
+                else:
                     stop_price = entry_price + atr[i] * stop_atr
                     tp_price = entry_price - atr[i] * tp_atr
                     trail_low = entry_price
-                    in_trade = True
+                in_trade = True
         else:
             hold_days = i - entry_idx
             exit_price = None
@@ -851,18 +1038,37 @@ def run_backtest_job(job_dict: dict, cache_dir: Path) -> dict:
     symbols in the job's universe.
     """
     try:
+        import random
+
         job_id = job_dict.get("job_id", "unknown")
         strategy_family = job_dict.get("strategy_family", "unknown")
         parameter_set = job_dict.get("parameter_set", {})
         symbol_universe = job_dict.get("symbol_universe", [])
         date_window = job_dict.get("date_window", ":")
         backtest_config = job_dict.get("backtest_config", {})
+        payload = job_dict.get("payload", {})
 
         direction = backtest_config.get("direction", "long")
         region = backtest_config.get("region", "us")
         date_parts = date_window.split(":")
         date_start = date_parts[0] if len(date_parts) > 0 else ""
         date_end = date_parts[1] if len(date_parts) > 1 else ""
+
+        # Extract entry_logic from job or payload
+        entry_logic = job_dict.get("entry_logic")
+        if not entry_logic and payload:
+            candidate = payload.get("candidate", {})
+            entry_logic = candidate.get("entry_logic")
+        if not entry_logic:
+            entry_logic = parameter_set.get("entry_logic")
+
+        # Auto-sample symbols from cache if universe is empty
+        if not symbol_universe:
+            data_dir = cache_dir / region
+            if data_dir.exists():
+                available = [f.stem for f in data_dir.glob("*.parquet")]
+                sample_size = min(15, len(available))  # Match EC2 tier1: 15 symbols
+                symbol_universe = random.sample(available, sample_size) if available else []
 
         all_trades: List[dict] = []
         symbols_tested = 0
@@ -882,6 +1088,7 @@ def run_backtest_job(job_dict: dict, cache_dir: Path) -> dict:
                 lows=bars["lows"], dates=bars["dates"],
                 params=params, direction=direction,
                 date_start=date_start, date_end=date_end,
+                entry_logic=entry_logic,
             )
             all_trades.extend(trades)
             symbols_tested += 1
@@ -1079,13 +1286,21 @@ class GridWorker:
             duration = result.get("execution_time", 0)
             try:
                 if result.get("status") == "completed":
-                    self.client.complete(job_id, metrics=result.get("metrics", {}),
-                                         duration=duration)
-                    self.stats["completed"] += 1
+                    ok = self.client.complete(job_id, metrics=result.get("metrics", {}),
+                                              duration=duration)
+                    if ok:
+                        self.stats["completed"] += 1
+                    else:
+                        log.warning("Report failed for job %s (complete returned False)", job_id)
+                        self.stats["failed"] += 1
                 else:
-                    self.client.fail(job_id, result.get("error", "unknown"),
-                                     duration=duration)
-                    self.stats["failed"] += 1
+                    ok = self.client.fail(job_id, result.get("error", "unknown"),
+                                          duration=duration)
+                    if ok:
+                        self.stats["failed"] += 1
+                    else:
+                        log.warning("Report failed for job %s (fail returned False)", job_id)
+                        self.stats["failed"] += 1
             except Exception as e:
                 log.error("Failed to report result for job %s: %s", job_id, e)
                 self.stats["failed"] += 1

@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/v2/core/tauri-config-schema/schema.json",
   "productName": "AuraAlpha",
   "identifier": "cc.auraalpha.desktop",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "build": {
     "frontendDist": "../dist",
     "beforeBuildCommand": "npm run build",
@@ -37,9 +37,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/aura-grid-worker"
+    ],
     "resources": [
-      "sidecar/**/*",
-      "../grid_worker/**/*"
+      "sidecar/**/*"
     ],
     "icon": [
       "icons/32x32.png",
