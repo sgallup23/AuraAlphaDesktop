@@ -31,6 +31,11 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -41,6 +46,33 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Build grid worker binary
+        run: |
+          cd grid_worker
+          pip install pyinstaller numpy polars psutil
+          pyinstaller --onefile --name aura-grid-worker --clean --noconfirm --hidden-import=numpy --hidden-import=polars --hidden-import=psutil --collect-all polars worker.py
+
+      - name: Place grid worker sidecar (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          mkdir -p src-tauri/binaries
+          cp grid_worker/dist/aura-grid-worker src-tauri/binaries/aura-grid-worker-x86_64-unknown-linux-gnu
+          chmod +x src-tauri/binaries/aura-grid-worker-x86_64-unknown-linux-gnu
+
+      - name: Place grid worker sidecar (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          mkdir -p src-tauri/binaries
+          cp grid_worker/dist/aura-grid-worker.exe src-tauri/binaries/aura-grid-worker-x86_64-pc-windows-msvc.exe
+        shell: bash
+
+      - name: Place grid worker sidecar (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          mkdir -p src-tauri/binaries
+          cp grid_worker/dist/aura-grid-worker src-tauri/binaries/aura-grid-worker-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/aura-grid-worker-aarch64-apple-darwin
 
       - name: Install npm dependencies
         run: npm ci
