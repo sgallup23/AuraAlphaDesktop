@@ -756,6 +756,82 @@ async fn get_bot_log(
     }
 }
 
+// ── Startup State Machine ─────────────────────────────────────────────
+
+/// IPC command: run startup checks (API reachability, crash detection, auth/broker status)
+#[tauri::command]
+async fn startup_check(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let mut status = serde_json::json!({
+        "api_reachable": false,
+        "has_auth": false,
+        "has_broker": false,
+        "previous_crash": false,
+        "needs_onboarding": true,
+    });
+
+    // 1. Check API health
+    let client = reqwest::Client::new();
+    match client
+        .get(HEALTH_URL)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            status["api_reachable"] = serde_json::Value::Bool(resp.status().is_success());
+        }
+        Err(_) => {}
+    }
+
+    // 2. Check lock file for crash detection
+    let lock_path = dirs::data_dir()
+        .unwrap_or_default()
+        .join("AuraAlpha")
+        .join(".running.lock");
+    if lock_path.exists() {
+        status["previous_crash"] = serde_json::Value::Bool(true);
+        // Clean up the stale lock
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
+    // Create new lock file (crash detection for next launch)
+    if let Some(lock_dir) = lock_path.parent() {
+        let _ = std::fs::create_dir_all(lock_dir);
+    }
+    let _ = std::fs::write(&lock_path, format!("{}", std::process::id()));
+
+    // 3. Check for saved auth tokens
+    {
+        use tauri_plugin_store::StoreExt;
+        if let Ok(store) = app.store("auth.json") {
+            let access = store.get("access_token").unwrap_or(serde_json::Value::Null);
+            if access.is_string() && access.as_str().unwrap_or("") != "" && access.as_str() != Some("null") {
+                status["has_auth"] = serde_json::Value::Bool(true);
+                status["needs_onboarding"] = serde_json::Value::Bool(false);
+            }
+        }
+    }
+
+    // 4. Check for configured broker
+    let configured = credential_store::list_configured_brokers();
+    if !configured.is_empty() {
+        status["has_broker"] = serde_json::Value::Bool(true);
+    }
+
+    Ok(status)
+}
+
+/// IPC command: clean shutdown — remove lock file for crash detection
+#[tauri::command]
+async fn clean_shutdown() -> Result<(), String> {
+    let lock_path = dirs::data_dir()
+        .unwrap_or_default()
+        .join("AuraAlpha")
+        .join(".running.lock");
+    let _ = std::fs::remove_file(&lock_path);
+    Ok(())
+}
+
 // ── Research Worker Sidecar ───────────────────────────────────────────
 
 /// Find the grid worker script path (checks bundled resource dirs per-platform, then fallbacks)
@@ -1161,6 +1237,9 @@ pub fn run() {
             start_research_worker,
             stop_research_worker,
             research_worker_status,
+            // Startup state machine
+            startup_check,
+            clean_shutdown,
         ])
         .setup(|app| {
             // ── System tray ──────────────────────────────────────

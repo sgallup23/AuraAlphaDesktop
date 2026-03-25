@@ -1386,6 +1386,9 @@ class GridWorker:
                 log.info("Batch done: %d completed, %d failed in %.1fs (%.1f jobs/min)%s",
                          completed, failed, batch_elapsed, self._throughput(), throttle_tag)
 
+                # Throttle: pause between batches to avoid exhausting API connection pool
+                self._shutdown.wait(timeout=2)
+
             except KeyboardInterrupt:
                 log.info("Worker interrupted.")
                 break

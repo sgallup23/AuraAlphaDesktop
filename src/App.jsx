@@ -2,8 +2,10 @@ window.__APP_LOAD_TIME = Date.now();
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { PreferencesProvider } from './contexts/PreferencesContext';
 import LoginPage from './pages/LoginPage';
+import StartupPage from './pages/StartupPage';
 import WorkspaceShell from './shell/WorkspaceShell';
-import { Suspense, Component } from 'react';
+import { Suspense, Component, useState, useEffect, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { PANELS } from './docking/panelRegistry';
 
 class ErrorBoundary extends Component {
@@ -37,7 +39,7 @@ class ErrorBoundary extends Component {
       return (
         <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0D1117', color: '#E6EDF3', fontFamily: 'system-ui, sans-serif' }}>
           <div style={{ textAlign: 'center', maxWidth: 480, padding: 32 }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>⚠</div>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>&#x26A0;</div>
             <h2 style={{ fontSize: 18, marginBottom: 8 }}>Something went wrong</h2>
             <p style={{ color: '#8B949E', fontSize: 13, marginBottom: 16 }}>{String(this.state.error)}</p>
             <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
@@ -98,14 +100,48 @@ function AuthGate() {
   return <WorkspaceShell />;
 }
 
+function AppWithStartup() {
+  // 'startup' = show startup screen, 'app' = show normal auth flow
+  const [phase, setPhase] = useState('startup');
+
+  // Register clean shutdown handler
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      // Fire-and-forget — browser may kill us before this completes,
+      // but the lock file cleanup is best-effort
+      try { invoke('clean_shutdown'); } catch {}
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
+  const handleReady = useCallback(() => {
+    // Auth was restored from store — go straight to app (AuthContext will pick it up)
+    setPhase('app');
+  }, []);
+
+  const handleNeedsLogin = useCallback(() => {
+    // No saved auth — show login via the normal AuthGate flow
+    setPhase('app');
+  }, []);
+
+  if (phase === 'startup') {
+    return <StartupPage onReady={handleReady} onNeedsLogin={handleNeedsLogin} />;
+  }
+
+  return (
+    <AuthProvider>
+      <PreferencesProvider>
+        <AuthGate />
+      </PreferencesProvider>
+    </AuthProvider>
+  );
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
-      <AuthProvider>
-        <PreferencesProvider>
-          <AuthGate />
-        </PreferencesProvider>
-      </AuthProvider>
+      <AppWithStartup />
     </ErrorBoundary>
   );
 }
