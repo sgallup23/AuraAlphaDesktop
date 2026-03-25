@@ -74,16 +74,72 @@ jobs:
           cp grid_worker/dist/aura-grid-worker src-tauri/binaries/aura-grid-worker-aarch64-apple-darwin
           chmod +x src-tauri/binaries/aura-grid-worker-aarch64-apple-darwin
 
+      # ── Windows code signing: sign grid worker sidecar before bundling ──
+      - name: Sign grid worker (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: powershell
+        run: |
+          $pfxBytes = [Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_PFX }}")
+          [IO.File]::WriteAllBytes("cert.pfx", $pfxBytes)
+          & signtool sign /f cert.pfx /p "${{ secrets.WINDOWS_CERT_PASSWORD }}" /tr http://ts.ssl.com /td sha256 /fd sha256 "src-tauri\binaries\aura-grid-worker-x86_64-pc-windows-msvc.exe"
+          Remove-Item cert.pfx
+
+      # ── macOS code signing: sign grid worker sidecar before bundling ──
+      - name: Sign grid worker (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          codesign --force --options runtime --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
+            src-tauri/binaries/aura-grid-worker-aarch64-apple-darwin
+
       - name: Install npm dependencies
         run: npm ci
 
+      # ── Build Tauri app with updater signing + platform-specific code signing ──
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Tauri updater signing (all platforms)
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS code signing + notarization (tauri-action handles these automatically)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: v__VERSION__
           releaseName: 'Aura Alpha v__VERSION__'
-          releaseBody: 'Download the installer for your platform below.'
-          releaseDraft: true
+          releaseBody: |
+            ## Aura Alpha v4.0.0 — Hedge AI
+
+            ### New
+            - Intelligence Dashboard panel (30+ years of market data)
+            - Market Regime panel (VIX history, regime transitions)
+            - Portfolio Brain panel (cross-bot exposure tracking)
+            - Grid Compute panel (distributed compute monitoring)
+            - Code signed on Windows (SSL.com OV) and macOS (Apple notarized)
+
+            ### Fixed
+            - Windows SmartScreen now shows publisher name
+            - macOS Gatekeeper no longer blocks installation
+            - Auto-updater signing for secure updates
+
+            Download the installer for your platform below.
+          releaseDraft: false
           prerelease: false
+
+      # ── Windows: sign the final installer artifacts after bundling ──
+      - name: Sign Windows installer
+        if: matrix.platform == 'windows-latest'
+        shell: powershell
+        run: |
+          $pfxBytes = [Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_PFX }}")
+          [IO.File]::WriteAllBytes("cert.pfx", $pfxBytes)
+          Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Include "*.exe","*.msi" | ForEach-Object {
+            Write-Host "Signing $($_.FullName)"
+            & signtool sign /f cert.pfx /p "${{ secrets.WINDOWS_CERT_PASSWORD }}" /tr http://ts.ssl.com /td sha256 /fd sha256 $_.FullName
+          }
+          Remove-Item cert.pfx
