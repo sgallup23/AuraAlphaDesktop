@@ -76,7 +76,7 @@ jobs:
 
       # ── Windows code signing: sign grid worker sidecar before bundling ──
       - name: Sign grid worker (Windows)
-        if: matrix.platform == 'windows-latest' && secrets.WINDOWS_CERT_PFX != ''
+        if: matrix.platform == 'windows-latest'
         continue-on-error: true
         shell: powershell
         run: |
@@ -87,7 +87,7 @@ jobs:
 
       # ── macOS code signing: sign grid worker sidecar before bundling ──
       - name: Sign grid worker (macOS)
-        if: matrix.platform == 'macos-latest' && secrets.APPLE_SIGNING_IDENTITY != ''
+        if: matrix.platform == 'macos-latest'
         continue-on-error: true
         run: |
           codesign --force --options runtime --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
@@ -135,7 +135,7 @@ jobs:
 
       # ── Windows: sign the final installer artifacts after bundling ──
       - name: Sign Windows installer
-        if: matrix.platform == 'windows-latest' && secrets.WINDOWS_CERT_PFX != ''
+        if: matrix.platform == 'windows-latest'
         continue-on-error: true
         shell: powershell
         run: |

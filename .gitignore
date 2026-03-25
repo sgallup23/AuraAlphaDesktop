@@ -19,3 +19,9 @@ Thumbs.db
 .env
 *.pem
 __pycache__/
+grid_worker/build/
+grid_worker/venv/
+grid_worker/dist/
+grid_worker/build/
+grid_worker/venv/
+grid_worker/dist/
