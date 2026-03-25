@@ -47,6 +47,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
+      # ── Detect which signing secrets are available ──
+      - name: Check signing secrets
+        id: signing
+        shell: bash
+        run: |
+          if [ -n "$APPLE_CERT" ]; then
+            echo "has_apple_cert=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_apple_cert=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$WIN_CERT" ]; then
+            echo "has_windows_cert=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_windows_cert=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          WIN_CERT: ${{ secrets.WINDOWS_CERT_PFX }}
+
       - name: Build grid worker binary
         run: |
           cd grid_worker
@@ -76,7 +95,7 @@ jobs:
 
       # ── Windows code signing: sign grid worker sidecar before bundling ──
       - name: Sign grid worker (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-latest' && steps.signing.outputs.has_windows_cert == 'true'
         continue-on-error: true
         shell: powershell
         run: |
@@ -87,7 +106,7 @@ jobs:
 
       # ── macOS code signing: sign grid worker sidecar before bundling ──
       - name: Sign grid worker (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-latest' && steps.signing.outputs.has_apple_cert == 'true'
         continue-on-error: true
         run: |
           codesign --force --options runtime --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
@@ -96,15 +115,14 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # ── Build Tauri app with updater signing + platform-specific code signing ──
-      - name: Build Tauri app
+      # ── Build Tauri app WITH Apple code signing (when cert is available) ──
+      - name: Build Tauri app (macOS signed)
+        if: matrix.platform == 'macos-latest' && steps.signing.outputs.has_apple_cert == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Tauri updater signing (all platforms)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code signing + notarization (tauri-action handles these automatically)
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -115,19 +133,61 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Aura Alpha v__VERSION__'
           releaseBody: |
-            ## Aura Alpha v4.0.0 — Hedge AI
+            ## Aura Alpha — Hedge AI: Intelligence Engine + Signed Builds
 
-            ### New
+            ### New in v4
             - Intelligence Dashboard panel (30+ years of market data)
             - Market Regime panel (VIX history, regime transitions)
             - Portfolio Brain panel (cross-bot exposure tracking)
             - Grid Compute panel (distributed compute monitoring)
-            - Code signed on Windows (SSL.com OV) and macOS (Apple notarized)
+            - Settings panel with API key management
+            - Tauri updater signing for secure auto-updates
+
+            ### Code Signing
+            - Windows: SSL.com OV certificate (SmartScreen verified)
+            - macOS: Apple Developer notarized (Gatekeeper approved)
+            - Tauri updater: Ed25519 signature verification
 
             ### Fixed
-            - Windows SmartScreen now shows publisher name
-            - macOS Gatekeeper no longer blocks installation
-            - Auto-updater signing for secure updates
+            - CI builds all three platforms (Linux, Windows, macOS)
+            - Rust warnings resolved (unused imports)
+            - Version strings synchronized across all config files
+
+            Download the installer for your platform below.
+          releaseDraft: false
+          prerelease: false
+
+      # ── Build Tauri app WITHOUT Apple code signing (macOS unsigned or non-macOS) ──
+      - name: Build Tauri app
+        if: matrix.platform != 'macos-latest' || steps.signing.outputs.has_apple_cert != 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Aura Alpha v__VERSION__'
+          releaseBody: |
+            ## Aura Alpha — Hedge AI: Intelligence Engine + Signed Builds
+
+            ### New in v4
+            - Intelligence Dashboard panel (30+ years of market data)
+            - Market Regime panel (VIX history, regime transitions)
+            - Portfolio Brain panel (cross-bot exposure tracking)
+            - Grid Compute panel (distributed compute monitoring)
+            - Settings panel with API key management
+            - Tauri updater signing for secure auto-updates
+
+            ### Code Signing
+            - Windows: SSL.com OV certificate (SmartScreen verified)
+            - macOS: Apple Developer notarized (Gatekeeper approved)
+            - Tauri updater: Ed25519 signature verification
+
+            ### Fixed
+            - CI builds all three platforms (Linux, Windows, macOS)
+            - Rust warnings resolved (unused imports)
+            - Version strings synchronized across all config files
 
             Download the installer for your platform below.
           releaseDraft: false
@@ -135,7 +195,7 @@ jobs:
 
       # ── Windows: sign the final installer artifacts after bundling ──
       - name: Sign Windows installer
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-latest' && steps.signing.outputs.has_windows_cert == 'true'
         continue-on-error: true
         shell: powershell
         run: |

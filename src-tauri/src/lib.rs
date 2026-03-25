@@ -5,12 +5,10 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::process::{Child, Command};
 use std::sync::Mutex;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, RunEvent, WindowEvent,
+    Manager, RunEvent, WindowEvent,
 };
 
 const HEALTH_URL: &str = "https://auraalpha.cc/api/system/health";
