@@ -1488,36 +1488,18 @@ pub fn run() {
                 });
             }
 
-            // ── Navigate to auraalpha.cc with retry loop ────
+            // ── Navigate to auraalpha.cc ────
+            // Navigate directly — WebView handles TLS/Cloudflare natively.
+            // No reqwest health check needed (reqwest gets blocked by Cloudflare
+            // Bot Fight Mode and DNS filters as a non-browser client).
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-                let client = reqwest::Client::new();
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                 let url: tauri::Url = "https://auraalpha.cc".parse().unwrap();
-
-                // Try up to 30 times (covers ~2.5 minutes of downtime)
-                for attempt in 0..30 {
-                    let reachable = client
-                        .get(HEALTH_URL)
-                        .timeout(std::time::Duration::from_secs(5))
-                        .send()
-                        .await
-                        .map(|r| r.status().is_success())
-                        .unwrap_or(false);
-
-                    if reachable {
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            let _ = window.navigate(url);
-                        }
-                        log::info!("Navigated to auraalpha.cc (attempt {})", attempt + 1);
-                        return;
-                    }
-
-                    // Wait 5s before retry
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.navigate(url);
+                    log::info!("Navigated to auraalpha.cc");
                 }
-                log::warn!("Could not reach auraalpha.cc after 30 attempts — staying on local fallback");
             });
 
             Ok(())
