@@ -81,7 +81,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMxRjg0QTM5NjA0OUI1OTIKUldTU3RVbGdPVXI0TWRWNWxJVUdGSW1zdjladGYrV2RXeUpVNCtSaktRNEVDa2o2dmRsZWVCRnEK",
       "endpoints": [
-        "https://auraalpha.cc/api/desktop/update/{{target}}/{{arch}}/{{current_version}}"
+        "https://update.auraalpha.cc/api/desktop/update/{{target}}/{{arch}}/{{current_version}}"
       ],
       "dialog": true
     }
