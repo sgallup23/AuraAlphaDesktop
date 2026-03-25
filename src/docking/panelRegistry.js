@@ -13,6 +13,10 @@ const BrokerSetupPanel = lazy(() => import('../panels/BrokerSetupPanel'));
 const BotManagerPanel = lazy(() => import('../panels/BotManagerPanel'));
 const BacktestPanel = lazy(() => import('../panels/BacktestPanel'));
 const SettingsPanel = lazy(() => import('../panels/SettingsPanel'));
+const IntelligenceDashboardPanel = lazy(() => import('../panels/IntelligenceDashboardPanel'));
+const RegimePanel = lazy(() => import('../panels/RegimePanel'));
+const PortfolioBrainPanel = lazy(() => import('../panels/PortfolioBrainPanel'));
+const MetaAllocatorPanel = lazy(() => import('../panels/MetaAllocatorPanel'));
 
 export const PANELS = {
   'bot-command':    { id: 'bot-command',    title: 'Bot Command Center', component: BotCommandPanel, closable: true, group: 'main' },
@@ -26,6 +30,10 @@ export const PANELS = {
   'bot-manager':    { id: 'bot-manager',    title: 'Bot Manager',        component: BotManagerPanel,  closable: true, group: 'settings' },
   'backtest':       { id: 'backtest',       title: 'Backtests',          component: BacktestPanel,    closable: true, group: 'main' },
   'settings':       { id: 'settings',       title: 'Settings',           component: SettingsPanel,    closable: true, group: 'settings' },
+  'intelligence':   { id: 'intelligence',   title: 'Intelligence',       component: IntelligenceDashboardPanel, closable: true, group: 'main' },
+  'regimes':        { id: 'regimes',        title: 'Regimes',            component: RegimePanel,      closable: true, group: 'main' },
+  'portfolio-brain':{ id: 'portfolio-brain', title: 'Portfolio Brain',   component: PortfolioBrainPanel, closable: true, group: 'main' },
+  'meta-allocator': { id: 'meta-allocator', title: 'Meta Allocator',    component: MetaAllocatorPanel, closable: true, group: 'main' },
 };
 
 export function getPanelComponent(panelId) {
