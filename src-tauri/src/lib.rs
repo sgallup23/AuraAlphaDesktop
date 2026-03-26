@@ -1114,7 +1114,7 @@ async fn start_research_worker(
         }
     }
 
-    let url = coordinator_url.unwrap_or_else(|| "https://auraalpha.cc".to_string());
+    let url = coordinator_url.unwrap_or_else(|| "https://update.auraalpha.cc".to_string());
     let par = max_parallel.unwrap_or(2);
 
     let child = spawn_research_worker(&url, par)?;
@@ -1449,7 +1449,7 @@ pub fn run() {
             // ── Auto-start research worker sidecar ─────────────────────
             let research_state = app.state::<ResearchWorkerState>();
             if find_research_worker_script().is_some() {
-                let coordinator_url = "https://auraalpha.cc";
+                let coordinator_url = "https://update.auraalpha.cc";
                 match spawn_research_worker(coordinator_url, 2) {
                     Ok(child) => {
                         log::info!(

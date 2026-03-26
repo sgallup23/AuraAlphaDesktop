@@ -122,7 +122,7 @@ def _auto_max_parallel() -> int:
 @dataclass
 class WorkerConfig:
     """All configuration for the grid worker."""
-    coordinator_url: str = "https://auraalpha.cc"
+    coordinator_url: str = "https://update.auraalpha.cc"
     max_parallel: int = 0       # 0 = auto-detect
     batch_size: int = 5
     cache_dir: Path = field(default_factory=lambda: Path.home() / ".aura-worker" / "data")
