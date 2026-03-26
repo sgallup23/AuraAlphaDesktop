@@ -157,6 +157,13 @@ pub fn spawn_bot(
         cmd.env(key, value);
     }
 
+    // Suppress console window on Windows
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
     let child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn bot: {}", e))?;

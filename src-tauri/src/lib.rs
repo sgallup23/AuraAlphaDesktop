@@ -289,17 +289,21 @@ fn spawn_worker(project_dir: &std::path::Path) -> Result<Child, String> {
         .try_clone()
         .map_err(|e| format!("Cannot clone log file: {}", e))?;
 
-    Command::new(&python)
-        .arg(worker_script.to_string_lossy().as_ref())
+    let mut cmd = Command::new(&python);
+    cmd.arg(worker_script.to_string_lossy().as_ref())
         .current_dir(project_dir)
         .env("REMOTE_API_URL", REMOTE_API_URL)
         .env("REMOTE_WORKER_TOKEN", &token)
         .env("WORKER_ID", "desktop")
         .env("POLL_INTERVAL", "30")
         .stdout(log_file)
-        .stderr(log_err)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn worker: {}", e))
+        .stderr(log_err);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd.spawn().map_err(|e| format!("Failed to spawn worker: {}", e))
 }
 
 /// IPC command: start the remote worker
@@ -1037,29 +1041,29 @@ fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result<Chi
     let log_err = log_file.try_clone()
         .map_err(|e| format!("Cannot clone log file: {}", e))?;
 
-    if use_python {
+    let mut cmd = if use_python {
         // Legacy Python path
         let (python, _) = find_python_for_worker(&binary);
-        Command::new(&python)
-            .arg(binary.to_string_lossy().as_ref())
-            .arg("--coordinator-url").arg(coordinator_url)
-            .arg("--max-parallel").arg(max_parallel.to_string())
-            .arg("--verbose")
-            .env("GRID_TOKEN_DIR", data_dir.to_string_lossy().as_ref())
-            .stdout(log_file).stderr(log_err)
-            .spawn()
-            .map_err(|e| format!("Failed to start grid worker (Python): {}", e))
+        let mut c = Command::new(&python);
+        c.arg(binary.to_string_lossy().as_ref());
+        c
     } else {
         // Compiled sidecar binary — no Python needed
         Command::new(binary.to_string_lossy().as_ref())
-            .arg("--coordinator-url").arg(coordinator_url)
-            .arg("--max-parallel").arg(max_parallel.to_string())
-            .arg("--verbose")
-            .env("GRID_TOKEN_DIR", data_dir.to_string_lossy().as_ref())
-            .stdout(log_file).stderr(log_err)
-            .spawn()
-            .map_err(|e| format!("Failed to start grid worker: {}", e))
+    };
+    cmd.arg("--coordinator-url").arg(coordinator_url)
+        .arg("--max-parallel").arg(max_parallel.to_string())
+        .arg("--verbose")
+        .env("GRID_TOKEN_DIR", data_dir.to_string_lossy().as_ref())
+        .stdout(log_file)
+        .stderr(log_err);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
+    let label = if use_python { "Python" } else { "binary" };
+    cmd.spawn().map_err(|e| format!("Failed to start grid worker ({}): {}", label, e))
 }
 
 fn find_sidecar_binary(name: &str) -> Option<std::path::PathBuf> {
