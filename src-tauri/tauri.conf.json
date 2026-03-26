@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/v2/core/tauri-config-schema/schema.json",
   "productName": "AuraAlpha",
   "identifier": "cc.auraalpha.desktop",
-  "version": "4.0.3",
+  "version": "4.0.4",
   "build": {
     "frontendDist": "../dist",
     "beforeBuildCommand": "npm run build",
@@ -32,7 +32,6 @@
       "tooltip": "Aura Alpha"
     },
     "security": {}
-
   },
   "bundle": {
     "active": true,
@@ -70,7 +69,11 @@
     },
     "linux": {
       "deb": {
-        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1"]
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1"
+        ]
       },
       "appimage": {
         "bundleMediaFramework": true
