@@ -16,12 +16,16 @@ class ErrorBoundary extends Component {
       const resetApp = async () => {
         try {
           const { invoke } = await import('@tauri-apps/api/core');
-          await invoke('clear_auth_token').catch(() => {});
+          // Preserve auth credentials — only reset workspace/preferences
           await invoke('save_workspace', { name: 'default', layoutJson: '{}' }).catch(() => {});
-          // Also clear any corrupted preferences
           await invoke('save_preference', { key: 'reset', value: true }).catch(() => {});
         } catch {}
+        // Don't clear localStorage entirely — preserve auth tokens
+        const token = localStorage.getItem('aura_token');
+        const user = localStorage.getItem('aura_user');
         localStorage.clear();
+        if (token) localStorage.setItem('aura_token', token);
+        if (user) localStorage.setItem('aura_user', user);
         sessionStorage.clear();
         // Force clear IndexedDB if present
         try { indexedDB.databases().then(dbs => dbs.forEach(db => indexedDB.deleteDatabase(db.name))); } catch {}
