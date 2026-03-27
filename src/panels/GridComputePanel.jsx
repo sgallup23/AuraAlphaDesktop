@@ -60,12 +60,24 @@ export default function GridComputePanel() {
     return <div className="p-4 text-aura-muted animate-pulse">Loading grid compute...</div>;
   }
 
-  const queueDepth = status?.queue_depth ?? status?.pending_jobs ?? status?.queue_size ?? '--';
-  const activeWorkers = status?.active_workers ?? status?.workers ?? status?.worker_count ?? '--';
-  const completed = status?.jobs_completed ?? status?.completed ?? status?.total_completed ?? '--';
-  const throughput = status?.throughput ?? status?.jobs_per_min ?? status?.jobs_per_minute ?? '--';
+  const queueDepth = status?.queue_depth ?? status?.pending_jobs ?? status?.queue_size
+    ?? (status?.jobs_by_status ? Object.values(status.jobs_by_status).reduce((a, b) => a + b, 0) : '--');
+  const workerList = status?.workers || [];
+  const activeWorkers = status?.active_workers ?? status?.worker_count
+    ?? workerList.filter(w => w.status === 'online' || w.status === 'busy').length
+    || status?.workers_by_status ? Object.entries(status?.workers_by_status || {}).filter(([s]) => s !== 'dead' && s !== 'offline').reduce((a, [, v]) => a + v, 0) : '--';
+  const completed = status?.jobs_completed ?? status?.completed ?? status?.total_completed
+    ?? status?.jobs_by_status?.completed ?? '--';
+  const throughputRaw = status?.throughput ?? status?.jobs_per_min ?? status?.jobs_per_minute
+    ?? (status?.throughput_1h != null ? (status.throughput_1h / 60) : null);
+  const throughput = throughputRaw != null ? throughputRaw : '--';
   const recentBatches = status?.recent_batches || status?.batches || [];
   const isWorkerRunning = workerStatus?.running || false;
+
+  // Per-device throughput — max for bar scaling
+  const maxJobsPerMin = workerList.length > 0
+    ? Math.max(...workerList.map(w => w.jobs_per_min || 0), 0.01)
+    : 0;
 
   // Latest batch details
   const batchResults = latestBatch?.results || latestBatch?.jobs || latestBatch?.items || [];
@@ -89,6 +101,40 @@ export default function GridComputePanel() {
           size="sm"
         />
       </div>
+
+      {/* Per-device throughput bars */}
+      {workerList.length > 0 && (
+        <div className="glass-panel p-3">
+          <div className="text-xs font-medium text-aura-muted mb-2">Jobs/min — per device</div>
+          <div className="space-y-1.5">
+            {workerList.map((w) => {
+              const pct = maxJobsPerMin > 0 ? Math.min((w.jobs_per_min / maxJobsPerMin) * 100, 100) : 0;
+              const isOnline = w.status === 'online' || w.status === 'busy';
+              return (
+                <div key={w.id}>
+                  <div className="flex items-center justify-between text-xs mb-0.5">
+                    <span className={`truncate max-w-[140px] ${isOnline ? 'text-aura-text' : 'text-aura-muted'}`}>
+                      {w.hostname || w.id}
+                    </span>
+                    <span className="font-mono text-aura-amber ml-2 shrink-0">
+                      {w.jobs_per_min.toFixed(2)}/min
+                    </span>
+                  </div>
+                  <div className="w-full h-1.5 rounded-full bg-aura-border overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${pct}%`,
+                        background: isOnline ? '#D29922' : '#30363D',
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Worker control */}
       <div className="glass-panel p-3">
