@@ -41,6 +41,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -72,7 +78,7 @@ jobs:
         run: |
           cd grid_worker
           pip install pyinstaller numpy polars psutil
-          pyinstaller --onefile --name aura-grid-worker --clean --noconfirm --hidden-import=numpy --hidden-import=polars --hidden-import=psutil --collect-all polars worker.py
+          pyinstaller --onefile --noconsole --name aura-grid-worker --clean --noconfirm --hidden-import=numpy --hidden-import=polars --hidden-import=psutil --collect-all polars worker.py
 
       - name: Place grid worker sidecar (Linux)
         if: matrix.platform == 'ubuntu-22.04'
@@ -142,7 +148,7 @@ jobs:
             Three live trading bots. Thirty years of market intelligence. Distributed research computing.
             This is the same system we use to manage real capital — and now it's yours.
 
-            ### What's in v4.1.0
+            ### What's in v4.1.1
 
             **Intelligence Engine (all panels now live)**
             - Intelligence Dashboard: real-time VIX, Fear & Greed Index, HMM-detected market regime (data back to 1993)
@@ -189,7 +195,7 @@ jobs:
             Three live trading bots. Thirty years of market intelligence. Distributed research computing.
             This is the same system we use to manage real capital — and now it's yours.
 
-            ### What's in v4.1.0
+            ### What's in v4.1.1
 
             **Intelligence Engine (all panels now live)**
             - Intelligence Dashboard: real-time VIX, Fear & Greed Index, HMM-detected market regime (data back to 1993)

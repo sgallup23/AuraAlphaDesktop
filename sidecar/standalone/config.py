@@ -15,10 +15,16 @@ import yaml
 
 
 def _default_worker_id() -> str:
-    """Generate a deterministic-ish worker ID from hostname + short uuid."""
+    """Generate a stable worker ID from hostname + machine fingerprint.
+
+    Uses a hash of hostname + MAC address so the same machine always gets
+    the same worker ID across restarts — no more ghost workers.
+    """
     hostname = platform.node().split(".")[0].lower()
-    short = uuid.uuid4().hex[:8]
-    return f"{hostname}-{short}"
+    # Deterministic fingerprint: hash hostname + first MAC address
+    mac = uuid.getnode()  # int from MAC address — stable per machine
+    fingerprint = uuid.uuid5(uuid.NAMESPACE_DNS, f"{hostname}-{mac}").hex[:8]
+    return f"{hostname}-{fingerprint}"
 
 
 def _auto_max_parallel() -> int:
