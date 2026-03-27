@@ -139,25 +139,36 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Aura Alpha v__VERSION__'
           releaseBody: |
-            ## Aura Alpha — Hedge AI: Intelligence Engine + Signed Builds
+            Three live trading bots. Thirty years of market intelligence. Distributed research computing.
+            This is the same system we use to manage real capital — and now it's yours.
 
-            ### New in v4
-            - Intelligence Dashboard panel (30+ years of market data)
-            - Market Regime panel (VIX history, regime transitions)
-            - Portfolio Brain panel (cross-bot exposure tracking)
-            - Grid Compute panel (distributed compute monitoring)
-            - Settings panel with API key management
-            - Tauri updater signing for secure auto-updates
+            ### What's in v4.1.0
+
+            **Intelligence Engine (all panels now live)**
+            - Intelligence Dashboard: real-time VIX, Fear & Greed Index, HMM-detected market regime (data back to 1993)
+            - Regime Panel: per-market regime distribution + VIX transition history across 8 global markets
+            - Meta Allocator: AI-driven capital allocation — adjusts for VIX level, regime, sector rotation, news sentiment
+            - Portfolio Brain: cross-bot exposure tracking, conflict detection, sector breakdown
+
+            **Live Trading**
+            - 3 active bots: SHAWN (equity day-trade), SHANE (equity swing), Nova (crypto 24/7)
+            - 83 strategies across 14 regions, 713 symbols
+            - 47 brokers supported (127+ effective venues via MT5 bridge)
+
+            **Research Grid**
+            - Distributed backtesting: 200,000+ completed research jobs
+            - Contribute your idle CPU, help discover the next edge
+            - Real-time queue depth + throughput monitoring
+
+            **New Default Layout**
+            - Intelligence Dashboard is front and center on first launch
+            - Grid Compute visible immediately (see research happening in real time)
+            - All 16 panels accessible, organized for progressive discovery
 
             ### Code Signing
-            - Windows: SSL.com OV certificate (SmartScreen verified)
-            - macOS: Apple Developer notarized (Gatekeeper approved)
-            - Tauri updater: Ed25519 signature verification
-
-            ### Fixed
-            - CI builds all three platforms (Linux, Windows, macOS)
-            - Rust warnings resolved (unused imports)
-            - Version strings synchronized across all config files
+            - Windows: SSL.com OV certificate — installs without SmartScreen warning
+            - macOS: Apple Developer notarized — opens without Gatekeeper prompt
+            - Auto-updates: Ed25519 signed for tamper-proof delivery
 
             Download the installer for your platform below.
           releaseDraft: false
@@ -175,25 +186,36 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Aura Alpha v__VERSION__'
           releaseBody: |
-            ## Aura Alpha — Hedge AI: Intelligence Engine + Signed Builds
+            Three live trading bots. Thirty years of market intelligence. Distributed research computing.
+            This is the same system we use to manage real capital — and now it's yours.
 
-            ### New in v4
-            - Intelligence Dashboard panel (30+ years of market data)
-            - Market Regime panel (VIX history, regime transitions)
-            - Portfolio Brain panel (cross-bot exposure tracking)
-            - Grid Compute panel (distributed compute monitoring)
-            - Settings panel with API key management
-            - Tauri updater signing for secure auto-updates
+            ### What's in v4.1.0
+
+            **Intelligence Engine (all panels now live)**
+            - Intelligence Dashboard: real-time VIX, Fear & Greed Index, HMM-detected market regime (data back to 1993)
+            - Regime Panel: per-market regime distribution + VIX transition history across 8 global markets
+            - Meta Allocator: AI-driven capital allocation — adjusts for VIX level, regime, sector rotation, news sentiment
+            - Portfolio Brain: cross-bot exposure tracking, conflict detection, sector breakdown
+
+            **Live Trading**
+            - 3 active bots: SHAWN (equity day-trade), SHANE (equity swing), Nova (crypto 24/7)
+            - 83 strategies across 14 regions, 713 symbols
+            - 47 brokers supported (127+ effective venues via MT5 bridge)
+
+            **Research Grid**
+            - Distributed backtesting: 200,000+ completed research jobs
+            - Contribute your idle CPU, help discover the next edge
+            - Real-time queue depth + throughput monitoring
+
+            **New Default Layout**
+            - Intelligence Dashboard is front and center on first launch
+            - Grid Compute visible immediately (see research happening in real time)
+            - All 16 panels accessible, organized for progressive discovery
 
             ### Code Signing
-            - Windows: SSL.com OV certificate (SmartScreen verified)
-            - macOS: Apple Developer notarized (Gatekeeper approved)
-            - Tauri updater: Ed25519 signature verification
-
-            ### Fixed
-            - CI builds all three platforms (Linux, Windows, macOS)
-            - Rust warnings resolved (unused imports)
-            - Version strings synchronized across all config files
+            - Windows: SSL.com OV certificate — installs without SmartScreen warning
+            - macOS: Apple Developer notarized — opens without Gatekeeper prompt
+            - Auto-updates: Ed25519 signed for tamper-proof delivery
 
             Download the installer for your platform below.
           releaseDraft: false
