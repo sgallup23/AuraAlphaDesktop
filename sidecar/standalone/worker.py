@@ -37,6 +37,8 @@ class StandaloneWorker:
             coordinator_url=config.coordinator_url,
             token=config.token,
             worker_id=config.worker_id,
+            verify_ssl=getattr(config, 'verify_ssl', True),
+            coordinator_host=getattr(config, 'coordinator_host', None),
         )
         self.fetcher = DataFetcher(client=self.client, cache_dir=config.cache_dir)
 

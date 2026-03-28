@@ -22,16 +22,22 @@ BACKOFF_BASE = 1  # seconds: 1, 2, 4
 class CoordinatorClient:
     """Thin HTTP wrapper around the coordinator contributor API."""
 
-    def __init__(self, coordinator_url: str, token: str, worker_id: str):
+    def __init__(self, coordinator_url: str, token: str, worker_id: str,
+                 verify_ssl: bool = True, coordinator_host: str = None):
         self.base_url = coordinator_url.rstrip("/")
         self.token = token
         self.worker_id = worker_id
         self.session = requests.Session()
-        self.session.headers.update({
+        headers = {
             "X-Contributor-Token": self.token,
             "X-Worker-Id": self.worker_id,
             "Content-Type": "application/json",
-        })
+        }
+        # Override Host header when connecting via IP to bypass DNS proxies
+        if coordinator_host:
+            headers["Host"] = coordinator_host
+        self.session.headers.update(headers)
+        self.session.verify = verify_ssl
         # Reasonable timeouts: (connect, read)
         self.timeout = (10, 60)
 

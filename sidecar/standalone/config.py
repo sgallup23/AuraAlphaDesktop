@@ -45,6 +45,7 @@ class WorkerConfig:
 
     # ── Coordinator connection ─────────────────────────────────────────
     coordinator_url: str = "https://auraalpha.cc"
+    coordinator_host: str = ""  # Override Host header (for IP-based connections)
     token: str = ""
     worker_id: str = ""
 
@@ -59,6 +60,9 @@ class WorkerConfig:
     # ── Timing ─────────────────────────────────────────────────────────
     heartbeat_interval: int = 30  # seconds
     job_timeout: int = 600  # seconds per job
+
+    # ── SSL ───────────────────────────────────────────────────────────
+    verify_ssl: bool = True  # Set to false for self-signed certs or network proxies
 
     # ── Detected hardware ──────────────────────────────────────────────
     cpu_count: int = field(default_factory=lambda: os.cpu_count() or 1)
@@ -96,9 +100,9 @@ class WorkerConfig:
                 with open(config_path) as f:
                     data = yaml.safe_load(f) or {}
                 for key in (
-                    "coordinator_url", "token", "worker_id", "max_parallel",
-                    "batch_size", "cache_dir", "log_dir", "heartbeat_interval",
-                    "job_timeout",
+                    "coordinator_url", "coordinator_host", "token", "worker_id",
+                    "max_parallel", "batch_size", "cache_dir", "log_dir",
+                    "heartbeat_interval", "job_timeout", "verify_ssl",
                 ):
                     if key in data:
                         kwargs[key] = data[key]
