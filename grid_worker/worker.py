@@ -122,7 +122,9 @@ def _auto_max_parallel() -> int:
 @dataclass
 class WorkerConfig:
     """All configuration for the grid worker."""
-    coordinator_url: str = "https://auraalpha.cc"
+    coordinator_url: str = "https://update.auraalpha.cc"
+    coordinator_host: str = ""   # Override Host header for IP-based connections
+    verify_ssl: bool = True      # Set False for networks with DNS proxies
     max_parallel: int = 0       # 0 = auto-detect
     batch_size: int = 5
     cache_dir: Path = field(default_factory=lambda: Path.home() / ".aura-worker" / "data")
@@ -206,6 +208,9 @@ def _auto_provision(base_url: str) -> dict:
     )
     try:
         ctx = ssl.create_default_context()
+        if not getattr(resolve_token, '_verify_ssl', True):
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
         with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if data.get("token") and data.get("worker_id"):
@@ -269,6 +274,9 @@ def _http_request(
             data = json.dumps(body).encode("utf-8") if body is not None else None
             req = urllib.request.Request(url, data=data, method=method, headers=headers)
             ctx = ssl.create_default_context()
+            if not getattr(_http_request, '_verify_ssl', True):
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
             resp = urllib.request.urlopen(req, timeout=timeout, context=ctx)
 
             if stream:
@@ -1442,6 +1450,10 @@ Token resolution order:
                         help="Jobs to pull per batch (default: 5)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Enable debug logging")
+    parser.add_argument("--no-verify-ssl", action="store_true",
+                        help="Disable SSL verification (for networks with DNS proxies)")
+    parser.add_argument("--coordinator-host", type=str, default="",
+                        help="Override Host header (use with IP-based coordinator URL)")
 
     args = parser.parse_args()
 
@@ -1478,24 +1490,51 @@ Token resolution order:
     max_parallel = args.max_parallel or int(os.getenv("MAX_PARALLEL", "0"))
     batch_size = args.batch_size or int(os.getenv("BATCH_SIZE", "5"))
 
+    verify_ssl = not args.no_verify_ssl
+    coordinator_host = args.coordinator_host or os.getenv("COORDINATOR_HOST", "")
+
     config = WorkerConfig(
         coordinator_url=coordinator_url,
+        coordinator_host=coordinator_host,
+        verify_ssl=verify_ssl,
         max_parallel=max_parallel,
         batch_size=batch_size,
         verbose=args.verbose,
     )
 
+    # Set SSL verification globally for request functions
+    resolve_token._verify_ssl = verify_ssl
+    _http_request._verify_ssl = verify_ssl
+
     # Resolve token
     try:
         token, worker_id = resolve_token(coordinator_url, args.token or None)
     except Exception as e:
-        log.error("Cannot obtain worker token: %s", e)
-        log.error("Check your network connection and coordinator URL.")
+        print(f"\n[ERROR] Cannot obtain worker token: {e}")
+        print(f"[ERROR] Coordinator URL: {coordinator_url}")
+        print("[ERROR] Check your network connection and try:")
+        print(f"  python worker.py --coordinator-url https://update.auraalpha.cc")
+        print("\nPress Enter to exit...")
+        try:
+            input()
+        except EOFError:
+            pass
         sys.exit(1)
 
     # Run
     worker = GridWorker(config, token, worker_id)
-    worker.run()
+    try:
+        worker.run()
+    except KeyboardInterrupt:
+        log.info("Worker stopped by user")
+    except Exception as e:
+        print(f"\n[ERROR] Worker crashed: {e}")
+        print("Press Enter to exit...")
+        try:
+            input()
+        except EOFError:
+            pass
+        sys.exit(1)
 
 
 if __name__ == "__main__":
