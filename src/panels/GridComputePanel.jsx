@@ -15,7 +15,7 @@ export default function GridComputePanel() {
     try {
       const [statusData, workerData] = await Promise.all([
         api('/intelligence/status', { silent: true }),
-        invoke('get_worker_status').catch(() => null),
+        invoke('research_worker_status').catch(() => null),
       ]);
 
       if (statusData) setStatus(statusData);
@@ -46,7 +46,7 @@ export default function GridComputePanel() {
   const toggleWorker = useCallback(async () => {
     setWorkerLoading(true);
     try {
-      const cmd = workerStatus?.running ? 'stop_worker' : 'start_worker';
+      const cmd = workerStatus?.running ? 'stop_research_worker' : 'start_research_worker';
       const result = await invoke(cmd);
       setWorkerStatus(result);
     } catch (e) {

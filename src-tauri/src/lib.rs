@@ -1082,6 +1082,19 @@ fn find_sidecar_binary(name: &str) -> Option<std::path::PathBuf> {
             for ancestor in exe_dir.ancestors() {
                 let dev = ancestor.join("src-tauri").join("binaries").join(name);
                 if dev.exists() { return Some(dev); }
+                // Also check target/release and target/debug for compiled binary
+                let release = ancestor.join("src-tauri").join("target").join("release").join(name);
+                if release.exists() { return Some(release); }
+                let debug = ancestor.join("src-tauri").join("target").join("debug").join(name);
+                if debug.exists() { return Some(debug); }
+            }
+            // Dev: check for triple-suffixed binary in binaries/ (Tauri convention)
+            if cfg!(target_os = "linux") {
+                let triple_name = format!("{}-x86_64-unknown-linux-gnu", name);
+                for ancestor in exe_dir.ancestors() {
+                    let dev = ancestor.join("src-tauri").join("binaries").join(&triple_name);
+                    if dev.exists() { return Some(dev); }
+                }
             }
         }
     }
@@ -1089,6 +1102,9 @@ fn find_sidecar_binary(name: &str) -> Option<std::path::PathBuf> {
     if let Some(home) = dirs::home_dir() {
         let candidate = home.join("AuraAlphaDesktop").join("src-tauri").join("binaries").join(name);
         if candidate.exists() { return Some(candidate); }
+        // Also check grid_worker/dist for PyInstaller-built binary
+        let dist = home.join("AuraAlphaDesktop").join("grid_worker").join("dist").join(name);
+        if dist.exists() { return Some(dist); }
     }
     None
 }
@@ -1118,7 +1134,7 @@ async fn start_research_worker(
         }
     }
 
-    let url = coordinator_url.unwrap_or_else(|| "https://update.auraalpha.cc".to_string());
+    let url = coordinator_url.unwrap_or_else(|| "https://auraalpha.cc".to_string());
     let par = max_parallel.unwrap_or(2);
 
     let child = spawn_research_worker(&url, par)?;
@@ -1452,8 +1468,13 @@ pub fn run() {
 
             // ── Auto-start research worker sidecar ─────────────────────
             let research_state = app.state::<ResearchWorkerState>();
-            if find_research_worker_script().is_some() {
-                let coordinator_url = "https://update.auraalpha.cc";
+            let has_worker = find_sidecar_binary(if cfg!(target_os = "windows") {
+                "aura-grid-worker.exe"
+            } else {
+                "aura-grid-worker"
+            }).is_some() || find_research_worker_script().is_some();
+            if has_worker {
+                let coordinator_url = "https://auraalpha.cc";
                 match spawn_research_worker(coordinator_url, 2) {
                     Ok(child) => {
                         log::info!(
@@ -1478,7 +1499,7 @@ pub fn run() {
                     }
                 }
             } else {
-                log::info!("Research worker script not found — sidecar not auto-started.");
+                log::info!("Grid worker binary and script both not found — sidecar not auto-started.");
             }
 
             // ── Safety net: show window after 3s even if JS fails ────

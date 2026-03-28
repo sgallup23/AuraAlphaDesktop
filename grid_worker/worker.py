@@ -122,7 +122,7 @@ def _auto_max_parallel() -> int:
 @dataclass
 class WorkerConfig:
     """All configuration for the grid worker."""
-    coordinator_url: str = "https://update.auraalpha.cc"
+    coordinator_url: str = "https://auraalpha.cc"
     max_parallel: int = 0       # 0 = auto-detect
     batch_size: int = 5
     cache_dir: Path = field(default_factory=lambda: Path.home() / ".aura-worker" / "data")
@@ -151,7 +151,12 @@ class WorkerConfig:
 # ============================================================================
 
 def _token_file_path() -> Path:
-    d = Path.home() / ".aura-worker"
+    # Respect GRID_TOKEN_DIR env var set by Tauri sidecar launcher
+    token_dir = os.environ.get("GRID_TOKEN_DIR")
+    if token_dir:
+        d = Path(token_dir)
+    else:
+        d = Path.home() / ".aura-worker"
     d.mkdir(parents=True, exist_ok=True)
     return d / "grid_token.json"
 
