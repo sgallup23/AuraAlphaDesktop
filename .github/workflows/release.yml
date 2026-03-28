@@ -270,3 +270,11 @@ jobs:
               -input_file_path="$exe" \
               -override=true
           done
+
+      - name: Verify no update.auraalpha.cc references
+        run: |
+          if grep -r "update.auraalpha.cc" --include="*.py" --include="*.rs" --include="*.json" --include="*.js" --include="*.jsx" --include="*.ts" . | grep -v node_modules | grep -v target | grep -v .git; then
+            echo "ERROR: Found update.auraalpha.cc references. Use auraalpha.cc instead."
+            exit 1
+          fi
+          echo "Clean — no update.auraalpha.cc references found"
