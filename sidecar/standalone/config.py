@@ -44,7 +44,7 @@ class WorkerConfig:
     """Configuration for a standalone research worker."""
 
     # ── Coordinator connection ─────────────────────────────────────────
-    coordinator_url: str = "https://update.auraalpha.cc"
+    coordinator_url: str = "https://auraalpha.cc"
     coordinator_host: str = ""  # Override Host header (for IP-based connections)
     token: str = ""
     worker_id: str = ""
