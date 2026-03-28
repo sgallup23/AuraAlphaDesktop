@@ -25,6 +25,11 @@ struct ResearchWorkerState {
     child: Mutex<Option<Child>>,
 }
 
+/// Managed state: holds the local API sidecar process (standalone mode)
+struct LocalApiState {
+    child: Mutex<Option<Child>>,
+}
+
 /// Research worker status info returned to the frontend via IPC
 #[derive(Clone, Serialize)]
 struct ResearchWorkerStatus {
@@ -1217,6 +1222,9 @@ pub fn run() {
             child: Mutex::new(None),
         })
         .manage(bot_manager::BotManagerState::new())
+        .manage(LocalApiState {
+            child: Mutex::new(None),
+        })
         .invoke_handler(tauri::generate_handler![
             // EC2 monitoring
             check_health,
@@ -1526,6 +1534,52 @@ pub fn run() {
                     log::info!("Navigated to auraalpha.cc");
                 }
             });
+
+            // ── Auto-start Local API sidecar (standalone mode) ──
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<LocalApiState>();
+                    let sidecar_dir = app_handle
+                        .path()
+                        .resource_dir()
+                        .unwrap_or_default()
+                        .join("sidecar")
+                        .join("local_api");
+
+                    // Try to start local API
+                    match Command::new("python3")
+                        .arg(sidecar_dir.join("main.py"))
+                        .current_dir(&sidecar_dir)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                    {
+                        Ok(child) => {
+                            log::info!("Local API started (PID {})", child.id());
+                            *state.child.lock().unwrap() = Some(child);
+                        }
+                        Err(e) => {
+                            // Try 'python' instead of 'python3' (Windows)
+                            match Command::new("python")
+                                .arg(sidecar_dir.join("main.py"))
+                                .current_dir(&sidecar_dir)
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn()
+                            {
+                                Ok(child) => {
+                                    log::info!("Local API started via python (PID {})", child.id());
+                                    *state.child.lock().unwrap() = Some(child);
+                                }
+                                Err(_) => {
+                                    log::warn!("Local API failed to start: {}. Cloud mode only.", e);
+                                }
+                            }
+                        }
+                    }
+                });
+            }
 
             Ok(())
         })

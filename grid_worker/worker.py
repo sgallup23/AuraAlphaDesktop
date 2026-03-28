@@ -122,7 +122,7 @@ def _auto_max_parallel() -> int:
 @dataclass
 class WorkerConfig:
     """All configuration for the grid worker."""
-    coordinator_url: str = "https://update.auraalpha.cc"
+    coordinator_url: str = "https://auraalpha.cc"
     coordinator_host: str = ""   # Override Host header for IP-based connections
     verify_ssl: bool = True      # Set False for networks with DNS proxies
     max_parallel: int = 0       # 0 = auto-detect
@@ -1513,7 +1513,7 @@ Token resolution order:
         print(f"\n[ERROR] Cannot obtain worker token: {e}")
         print(f"[ERROR] Coordinator URL: {coordinator_url}")
         print("[ERROR] Check your network connection and try:")
-        print(f"  python worker.py --coordinator-url https://update.auraalpha.cc")
+        print(f"  python worker.py --coordinator-url https://auraalpha.cc")
         print("\nPress Enter to exit...")
         try:
             input()
