@@ -59,7 +59,8 @@
         "language": "en-US"
       },
       "nsis": {
-        "installMode": "both"
+        "installMode": "both",
+        "installerScript": "nsis/installer.nsi"
       }
     },
     "macOS": {

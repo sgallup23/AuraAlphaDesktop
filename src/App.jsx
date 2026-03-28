@@ -122,6 +122,17 @@ function AppWithStartup() {
   const handleReady = useCallback(() => {
     // Auth was restored from store — go straight to app (AuthContext will pick it up)
     setPhase('app');
+    // Auto-start grid worker after login (5s delay for app to settle)
+    setTimeout(async () => {
+      try {
+        const { invoke: inv } = await import('@tauri-apps/api/core');
+        const ws = await inv('research_worker_status').catch(() => null);
+        if (ws && !ws.running) {
+          await inv('start_research_worker').catch(() => {});
+          console.log('[App] Grid worker auto-started after login');
+        }
+      } catch {}
+    }, 5000);
   }, []);
 
   const handleNeedsLogin = useCallback(() => {

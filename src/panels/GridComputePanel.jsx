@@ -43,6 +43,24 @@ export default function GridComputePanel() {
     return () => clearInterval(iv);
   }, [fetchData]);
 
+  // Auto-start worker if not running on panel mount
+  useEffect(() => {
+    let cancelled = false;
+    const autoStart = async () => {
+      try {
+        const ws = await invoke('research_worker_status').catch(() => null);
+        if (!cancelled && ws && !ws.running) {
+          await invoke('start_research_worker').catch(() => {});
+          const updated = await invoke('research_worker_status').catch(() => null);
+          if (updated) setWorkerStatus(updated);
+        }
+      } catch { /* silent */ }
+    };
+    // Delay 3s to let app fully initialize
+    const timer = setTimeout(autoStart, 3000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, []);
+
   const toggleWorker = useCallback(async () => {
     setWorkerLoading(true);
     try {
