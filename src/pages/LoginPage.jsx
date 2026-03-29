@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, enterStandaloneMode } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [remember, setRemember] = useState(true);
@@ -89,8 +89,27 @@ export default function LoginPage() {
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
 
-          <p className="text-center text-xs text-aura-muted mt-4">
-            Credentials are encrypted and stored locally on this device.
+          {/* Divider */}
+          <div className="flex items-center gap-3 py-1">
+            <div className="flex-1 h-px bg-aura-border" />
+            <span className="text-xs text-aura-muted">or</span>
+            <div className="flex-1 h-px bg-aura-border" />
+          </div>
+
+          {/* Standalone / Explorer mode */}
+          <button
+            type="button"
+            onClick={enterStandaloneMode}
+            className="w-full py-2.5 px-4 rounded-lg border border-aura-border text-aura-muted
+                       hover:text-aura-text hover:border-aura-blue/50 transition-colors text-sm font-medium"
+          >
+            Continue as Explorer (Offline)
+          </button>
+
+          <p className="text-center text-xs text-aura-muted mt-2">
+            Explorer mode: paper trading, 10 strategies, no account required.
+            <br />
+            Sign in to unlock all features with your subscription.
           </p>
         </form>
       </div>

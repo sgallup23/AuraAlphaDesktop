@@ -2,10 +2,10 @@
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/v2/core/tauri-config-schema/schema.json",
   "productName": "AuraAlpha",
   "identifier": "cc.auraalpha.desktop",
-  "version": "5.0.8",
+  "version": "5.1.0",
   "build": {
     "frontendDist": "../dist",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "echo 'Using pre-built dist'",
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420"
   },
