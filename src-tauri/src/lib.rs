@@ -1,5 +1,8 @@
 pub mod config;
 pub mod worker;
+pub mod updater;
+pub mod auth;
+pub mod api_proxy;
 mod bot_manager;
 mod credential_store;
 
@@ -121,60 +124,6 @@ async fn check_health() -> Result<HealthSummary, String> {
             })
         }
         Ok(resp) => Err(format!("API returned status {}", resp.status())),
-        Err(e) => Err(format!("Connection failed: {}", e)),
-    }
-}
-
-/// IPC command: generic API proxy — bypasses browser CORS by using reqwest (Rust-side HTTP)
-/// The frontend calls this instead of fetch() to avoid Cloudflare CORS issues.
-#[tauri::command]
-async fn api_proxy(
-    method: String,
-    path: String,
-    body: Option<String>,
-    auth_token: Option<String>,
-) -> Result<String, String> {
-    let url = if path.starts_with("http") {
-        path
-    } else {
-        format!(
-            "{}{}{}",
-            REMOTE_API_URL.trim_end_matches("/api/remote"),
-            if path.starts_with('/') { "" } else { "/" },
-            path
-        )
-    };
-
-    let client = reqwest::Client::new();
-    let mut req = match method.to_uppercase().as_str() {
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "DELETE" => client.delete(&url),
-        "PATCH" => client.patch(&url),
-        _ => client.get(&url),
-    };
-
-    req = req.timeout(std::time::Duration::from_secs(30));
-    req = req.header("Content-Type", "application/json");
-
-    if let Some(token) = auth_token {
-        req = req.header("Authorization", format!("Bearer {}", token));
-    }
-
-    if let Some(b) = body {
-        req = req.body(b);
-    }
-
-    match req.send().await {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            if status >= 200 && status < 300 {
-                Ok(text)
-            } else {
-                Err(format!("API {}: {}", status, text))
-            }
-        }
         Err(e) => Err(format!("Connection failed: {}", e)),
     }
 }
@@ -424,52 +373,6 @@ async fn navigate_to(app: tauri::AppHandle, url: String) -> Result<(), String> {
     } else {
         Err("Main window not found".to_string())
     }
-}
-
-// ── Auth Token & Persistence IPC Commands ────────────────────────────
-
-/// IPC command: save auth tokens to persistent store
-#[tauri::command]
-async fn save_auth_token(
-    app: tauri::AppHandle,
-    access_token: String,
-    refresh_token: String,
-    user_json: String,
-) -> Result<bool, String> {
-    use tauri_plugin_store::StoreExt;
-    let store = app.store("auth.json").map_err(|e| e.to_string())?;
-    store.set("access_token", serde_json::Value::String(access_token));
-    store.set("refresh_token", serde_json::Value::String(refresh_token));
-    store.set("user", serde_json::Value::String(user_json));
-    store.save().map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-/// IPC command: load auth tokens from persistent store
-#[tauri::command]
-async fn load_auth_token(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    use tauri_plugin_store::StoreExt;
-    let store = app.store("auth.json").map_err(|e| e.to_string())?;
-    let access = store.get("access_token").unwrap_or(serde_json::Value::Null);
-    let refresh = store.get("refresh_token").unwrap_or(serde_json::Value::Null);
-    let user = store.get("user").unwrap_or(serde_json::Value::Null);
-    Ok(serde_json::json!({
-        "access_token": access,
-        "refresh_token": refresh,
-        "user": user
-    }))
-}
-
-/// IPC command: clear auth tokens from persistent store
-#[tauri::command]
-async fn clear_auth_token(app: tauri::AppHandle) -> Result<bool, String> {
-    use tauri_plugin_store::StoreExt;
-    let store = app.store("auth.json").map_err(|e| e.to_string())?;
-    store.delete("access_token");
-    store.delete("refresh_token");
-    store.delete("user");
-    store.save().map_err(|e| e.to_string())?;
-    Ok(true)
 }
 
 /// IPC command: create a detached panel window
@@ -1232,14 +1135,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // EC2 monitoring
             check_health,
-            api_proxy,
+            api_proxy::api_proxy,
             get_bot_status,
             send_notification,
             navigate_to,
             // Auth token persistence
-            save_auth_token,
-            load_auth_token,
-            clear_auth_token,
+            auth::save_auth_token,
+            auth::load_auth_token,
+            auth::clear_auth_token,
+            // Updater
+            updater::check_for_update,
             // Multi-window panels
             create_panel_window,
             // Preferences & workspaces
