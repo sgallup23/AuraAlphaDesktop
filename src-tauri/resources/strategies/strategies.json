@@ -1,0 +1,912 @@
+[
+  {
+    "key": "accumulation_day",
+    "name": "Accumulation Day",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "alt_season_surge",
+    "name": "Alt Season Surge",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "ascending_triangle",
+    "name": "Ascending Triangle",
+    "pf": 10.0,
+    "win_rate": 75.5,
+    "trade_count": 49,
+    "direction": "long",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 30,
+      "max_hold_days": 20,
+      "min_score": 4,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "avwap_bounce",
+    "name": "Avwap Bounce",
+    "pf": 10.0,
+    "win_rate": 47.1,
+    "trade_count": 34,
+    "direction": "long",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 999,
+      "max_hold_days": 999,
+      "min_score": 8,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "bear_flag",
+    "name": "Bear Flag",
+    "pf": 10.0,
+    "win_rate": 71.9,
+    "trade_count": 57,
+    "direction": "short",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 30,
+      "max_hold_days": 20,
+      "min_score": 8,
+      "trailing_stop": 2
+    }
+  },
+  {
+    "key": "bearish_engulfing",
+    "name": "Bearish Engulfing",
+    "pf": 10.0,
+    "win_rate": 77.0,
+    "trade_count": 61,
+    "direction": "short",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 30,
+      "max_hold_days": 20,
+      "min_score": 4,
+      "trailing_stop": 2
+    }
+  },
+  {
+    "key": "blow_off_top",
+    "name": "Blow Off Top",
+    "pf": 10.0,
+    "win_rate": 77.5,
+    "trade_count": 40,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "bollinger_squeeze_long",
+    "name": "Bollinger Squeeze Long",
+    "pf": 10.0,
+    "win_rate": 54.9,
+    "trade_count": 51,
+    "direction": "long",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "bon_shorty",
+    "name": "Bon Shorty",
+    "pf": 10.0,
+    "win_rate": 73.2,
+    "trade_count": 56,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "breakdown",
+    "name": "Breakdown",
+    "pf": 10.0,
+    "win_rate": 81.0,
+    "trade_count": 58,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "breakout",
+    "name": "Breakout",
+    "pf": 10.0,
+    "win_rate": 55.6,
+    "trade_count": 36,
+    "direction": "long",
+    "free": true,
+    "params": {
+      "stop_loss": 2,
+      "take_profit": 999,
+      "max_hold_days": 45,
+      "min_score": 6,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "btc_beta_breakout",
+    "name": "Btc Beta Breakout",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "btc_capitulation_buy",
+    "name": "Btc Capitulation Buy",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "btc_divergence_long",
+    "name": "Btc Divergence Long",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "long",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "btc_divergence_short",
+    "name": "Btc Divergence Short",
+    "pf": 10.0,
+    "win_rate": 77.5,
+    "trade_count": 40,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "bull_flag",
+    "name": "Bull Flag",
+    "pf": 10.0,
+    "win_rate": 45.5,
+    "trade_count": 44,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "bullish_engulfing",
+    "name": "Bullish Engulfing",
+    "pf": 10.0,
+    "win_rate": 71.1,
+    "trade_count": 45,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "bullish_pullback",
+    "name": "Bullish Pullback",
+    "pf": 10.0,
+    "win_rate": 53.1,
+    "trade_count": 49,
+    "direction": "long",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 999,
+      "max_hold_days": 30,
+      "min_score": 8,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "cascade_liquidation_short",
+    "name": "Cascade Liquidation Short",
+    "pf": 10.0,
+    "win_rate": 77.5,
+    "trade_count": 40,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "crypto_engulfing_momentum",
+    "name": "Crypto Engulfing Momentum",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "crypto_hammer",
+    "name": "Crypto Hammer",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "crypto_mean_revert",
+    "name": "Crypto Mean Revert",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "cup_and_handle",
+    "name": "Cup And Handle",
+    "pf": 10.0,
+    "win_rate": 69.4,
+    "trade_count": 62,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "death_cross",
+    "name": "Death Cross",
+    "pf": 10.0,
+    "win_rate": 70.7,
+    "trade_count": 610,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "descending_triangle",
+    "name": "Descending Triangle",
+    "pf": 10.0,
+    "win_rate": 75.0,
+    "trade_count": 48,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "dip_accumulation",
+    "name": "Dip Accumulation",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "distribution_day",
+    "name": "Distribution Day",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "double_bottom",
+    "name": "Double Bottom",
+    "pf": 10.0,
+    "win_rate": 57.9,
+    "trade_count": 38,
+    "direction": "long",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 999,
+      "max_hold_days": 30,
+      "min_score": 4,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "double_top",
+    "name": "Double Top",
+    "pf": 10.0,
+    "win_rate": 78.7,
+    "trade_count": 47,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "downward_dog",
+    "name": "Downward Dog",
+    "pf": 10.0,
+    "win_rate": 76.7,
+    "trade_count": 43,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "earnings_drift",
+    "name": "Earnings Drift",
+    "pf": 10.0,
+    "win_rate": 64.8,
+    "trade_count": 213,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "ema_cloud_long",
+    "name": "Ema Cloud Long",
+    "pf": 10.0,
+    "win_rate": 60.5,
+    "trade_count": 43,
+    "direction": "long",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "evening_star",
+    "name": "Evening Star",
+    "pf": 10.0,
+    "win_rate": 76.6,
+    "trade_count": 47,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "failed_bounce",
+    "name": "Failed Bounce",
+    "pf": 10.0,
+    "win_rate": 40.4,
+    "trade_count": 57,
+    "direction": "short",
+    "free": true,
+    "params": {
+      "stop_loss": 2,
+      "take_profit": 999,
+      "max_hold_days": 45,
+      "min_score": 8,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "fibonacci_retracement_long",
+    "name": "Fibonacci Retracement Long",
+    "pf": 10.0,
+    "win_rate": 58.3,
+    "trade_count": 36,
+    "direction": "long",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "gap_and_go",
+    "name": "Gap And Go",
+    "pf": 10.0,
+    "win_rate": 55.3,
+    "trade_count": 38,
+    "direction": "long",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 30,
+      "max_hold_days": 999,
+      "min_score": 6,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "gap_fade",
+    "name": "Gap Fade",
+    "pf": 10.0,
+    "win_rate": 74.5,
+    "trade_count": 47,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "golden_cross",
+    "name": "Golden Cross",
+    "pf": 10.0,
+    "win_rate": 71.2,
+    "trade_count": 476,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "hammer_reversal",
+    "name": "Hammer Reversal",
+    "pf": 10.0,
+    "win_rate": 68.9,
+    "trade_count": 61,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "head_and_shoulders",
+    "name": "Head And Shoulders",
+    "pf": 10.0,
+    "win_rate": 70.4,
+    "trade_count": 71,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "horseshoe_up",
+    "name": "Horseshoe Up",
+    "pf": 10.0,
+    "win_rate": 48.5,
+    "trade_count": 33,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "inside_bar_breakout",
+    "name": "Inside Bar Breakout",
+    "pf": 10.0,
+    "win_rate": 51.1,
+    "trade_count": 45,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "institutional_buying",
+    "name": "Institutional Buying",
+    "pf": 10.0,
+    "win_rate": 51.5,
+    "trade_count": 33,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "macd_crossover_long",
+    "name": "Macd Crossover Long",
+    "pf": 10.0,
+    "win_rate": 55.3,
+    "trade_count": 38,
+    "direction": "long",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "macd_crossover_short",
+    "name": "Macd Crossover Short",
+    "pf": 10.0,
+    "win_rate": 77.3,
+    "trade_count": 44,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "mighty_mouse",
+    "name": "Mighty Mouse",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "momentum_surge",
+    "name": "Momentum Surge",
+    "pf": 10.0,
+    "win_rate": 53.7,
+    "trade_count": 41,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "morning_star",
+    "name": "Morning Star",
+    "pf": 10.0,
+    "win_rate": 60.9,
+    "trade_count": 46,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "neo_breakout",
+    "name": "Neo Breakout",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "new_high_momentum",
+    "name": "New High Momentum",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "nice_chart",
+    "name": "Nice Chart",
+    "pf": 10.0,
+    "win_rate": 67.3,
+    "trade_count": 49,
+    "direction": "long",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 30,
+      "max_hold_days": 20,
+      "min_score": 6,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "opening_range_breakout",
+    "name": "Opening Range Breakout",
+    "pf": 10.0,
+    "win_rate": 62.2,
+    "trade_count": 37,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "overbought_rsi_reversal",
+    "name": "Overbought Rsi Reversal",
+    "pf": 10.0,
+    "win_rate": 65.7,
+    "trade_count": 67,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "oversold_rsi_bounce",
+    "name": "Oversold Rsi Bounce",
+    "pf": 10.0,
+    "win_rate": 48.8,
+    "trade_count": 43,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "parabolic_exhaustion",
+    "name": "Parabolic Exhaustion",
+    "pf": 10.0,
+    "win_rate": 77.5,
+    "trade_count": 40,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "parabolic_sar_flip",
+    "name": "Parabolic Sar Flip",
+    "pf": 10.0,
+    "win_rate": 50.0,
+    "trade_count": 42,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "politician_trades",
+    "name": "Politician Trades",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "power_hour_long",
+    "name": "Power Hour Long",
+    "pf": 10.0,
+    "win_rate": 44.7,
+    "trade_count": 47,
+    "direction": "long",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "pre_market_gapper",
+    "name": "Pre Market Gapper",
+    "pf": 10.0,
+    "win_rate": 60.0,
+    "trade_count": 45,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "range_breakout",
+    "name": "Range Breakout",
+    "pf": 10.0,
+    "win_rate": 59.5,
+    "trade_count": 42,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "relative_strength_leader",
+    "name": "Relative Strength Leader",
+    "pf": 10.0,
+    "win_rate": 61.8,
+    "trade_count": 34,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "relative_weakness_short",
+    "name": "Relative Weakness Short",
+    "pf": 10.0,
+    "win_rate": 75.6,
+    "trade_count": 45,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "rising_wedge_breakdown",
+    "name": "Rising Wedge Breakdown",
+    "pf": 10.0,
+    "win_rate": 61.1,
+    "trade_count": 54,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "sector_rotation_long",
+    "name": "Sector Rotation Long",
+    "pf": 10.0,
+    "win_rate": 56.0,
+    "trade_count": 50,
+    "direction": "long",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "slippery_slope",
+    "name": "Slippery Slope",
+    "pf": 10.0,
+    "win_rate": 78.3,
+    "trade_count": 46,
+    "direction": "short",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 30,
+      "max_hold_days": 30,
+      "min_score": 8,
+      "trailing_stop": 2
+    }
+  },
+  {
+    "key": "snap_back_long",
+    "name": "Snap Back Long",
+    "pf": 10.0,
+    "win_rate": 55.3,
+    "trade_count": 38,
+    "direction": "long",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 30,
+      "max_hold_days": 45,
+      "min_score": 4,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "staggering_volume",
+    "name": "Staggering Volume",
+    "pf": 10.0,
+    "win_rate": 47.4,
+    "trade_count": 38,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "sunday_dip_buy",
+    "name": "Sunday Dip Buy",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "sunrise_mover",
+    "name": "Sunrise Mover",
+    "pf": 10.0,
+    "win_rate": 49.3,
+    "trade_count": 67,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "support_bounce",
+    "name": "Support Bounce",
+    "pf": 10.0,
+    "win_rate": 59.4,
+    "trade_count": 32,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "the_5_day_bounce",
+    "name": "The 5 Day Bounce",
+    "pf": 10.0,
+    "win_rate": 57.5,
+    "trade_count": 40,
+    "direction": "long",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 30,
+      "max_hold_days": 30,
+      "min_score": 4,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "tight_flag",
+    "name": "Tight Flag",
+    "pf": 10.0,
+    "win_rate": 80.0,
+    "trade_count": 60,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "topping_formation",
+    "name": "Topping Formation",
+    "pf": 10.0,
+    "win_rate": 76.7,
+    "trade_count": 43,
+    "direction": "short",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 30,
+      "max_hold_days": 20,
+      "min_score": 4,
+      "trailing_stop": 2
+    }
+  },
+  {
+    "key": "trend_play",
+    "name": "Trend Play",
+    "pf": 10.0,
+    "win_rate": 65.9,
+    "trade_count": 41,
+    "direction": "long",
+    "free": true,
+    "params": {
+      "stop_loss": 3,
+      "take_profit": 30,
+      "max_hold_days": 30,
+      "min_score": 8,
+      "trailing_stop": 0
+    }
+  },
+  {
+    "key": "utc_midnight_reversal",
+    "name": "Utc Midnight Reversal",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "vol_contraction_squeeze",
+    "name": "Vol Contraction Squeeze",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "vol_expansion_long",
+    "name": "Vol Expansion Long",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "long",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "volume_climax_long",
+    "name": "Volume Climax Long",
+    "pf": 10.0,
+    "win_rate": 61.5,
+    "trade_count": 39,
+    "direction": "long",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "volume_climax_short",
+    "name": "Volume Climax Short",
+    "pf": 10.0,
+    "win_rate": 73.4,
+    "trade_count": 881,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "weekend_drift",
+    "name": "Weekend Drift",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "weekend_fade",
+    "name": "Weekend Fade",
+    "pf": 10.0,
+    "win_rate": 77.5,
+    "trade_count": 40,
+    "direction": "short",
+    "free": false,
+    "params": null
+  },
+  {
+    "key": "wick_rejection",
+    "name": "Wick Rejection",
+    "pf": 10.0,
+    "win_rate": 56.7,
+    "trade_count": 30,
+    "direction": "short",
+    "free": false,
+    "params": null
+  }
+]

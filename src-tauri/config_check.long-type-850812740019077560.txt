@@ -1,0 +1,2 @@
+<tauri::tauri_utils::config::BundleTarget as serde_core::de::Deserialize<'de>>::deserialize::BundleTargetInner
+<tauri::tauri_utils::config_v1::BundleTarget as serde_core::de::Deserialize<'de>>::deserialize::BundleTargetInner
