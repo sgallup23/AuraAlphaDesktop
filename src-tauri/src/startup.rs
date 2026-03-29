@@ -8,9 +8,10 @@ use tauri::Manager;
 
 use crate::credential_store;
 
-pub(crate) const HEALTH_URL: &str = "https://auraalpha.cc/api/system/health";
-pub(crate) const TELEMETRY_URL: &str = "https://auraalpha.cc/api/telemetry/latest";
-pub(crate) const REMOTE_API_URL: &str = "https://auraalpha.cc/api/remote";
+// Local-first: try local sidecar, cloud is backup only
+pub(crate) const HEALTH_URL: &str = "http://127.0.0.1:8020/api/system/health";
+pub(crate) const TELEMETRY_URL: &str = "http://127.0.0.1:8020/api/telemetry/latest";
+pub(crate) const REMOTE_API_URL: &str = "http://127.0.0.1:8020/api/remote";
 
 // ── Shared types (also used by tray.rs) ──────────────────────────────
 

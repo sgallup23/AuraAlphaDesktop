@@ -1,0 +1,2 @@
+import{a as r}from"./index-C0Zqfgkc.js";import{g as a}from"./index-CP5ik6D5.js";const o=r.create({baseURL:a(),timeout:2e4});o.interceptors.request.use(e=>{const t=localStorage.getItem("aura_token");return t&&(e.headers.Authorization=`Bearer ${t}`),e});o.interceptors.response.use(e=>e,e=>(e.response&&e.response.status===401&&(localStorage.removeItem("aura_token"),localStorage.removeItem("aura_refresh_token"),localStorage.removeItem("aura_user"),window.location.href="/login"),Promise.reject(e)));export{o as a};
+//# sourceMappingURL=uiApiCompat-CtCMQwJ4.js.map

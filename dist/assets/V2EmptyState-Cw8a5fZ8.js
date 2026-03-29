@@ -1,0 +1,2 @@
+import{j as t}from"./vendor-C5RdOJEA.js";function a({icon:e="◈",title:i="No Data",message:r="Waiting for live data from the API."}){return t.jsxs("div",{className:"v2-card",style:{padding:48,textAlign:"center",color:"var(--text-secondary, #90A3AF)"},children:[t.jsx("div",{style:{fontSize:36,marginBottom:12,opacity:.5},children:e}),t.jsx("div",{style:{fontSize:15,fontWeight:700,marginBottom:6,color:"var(--text-primary, #E5E7DB)"},children:i}),t.jsx("div",{style:{fontSize:12},children:r})]})}export{a as V};
+//# sourceMappingURL=V2EmptyState-Cw8a5fZ8.js.map

@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /v2/
+Disallow: /settings/
+Disallow: /onboarding/
+Sitemap: https://auraalpha.cc/sitemap.xml

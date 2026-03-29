@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Aura Alpha Blog</title>
+    <description>Algorithmic trading insights, strategy analysis, and platform updates from Aura Alpha.</description>
+    <link>https://auraalpha.cc/blog</link>
+    <atom:link href="https://auraalpha.cc/rss.xml" rel="self" type="application/rss+xml"/>
+    <language>en-us</language>
+    <lastBuildDate>Thu, 19 Mar 2026 12:00:00 GMT</lastBuildDate>
+    <copyright>Copyright 2026 Aura Alpha Holdings LLC</copyright>
+    <managingEditor>shawn@auraalpha.cc (Shawn Gallup)</managingEditor>
+    <image>
+      <url>https://auraalpha.cc/images/icon-192.png</url>
+      <title>Aura Alpha Blog</title>
+      <link>https://auraalpha.cc/blog</link>
+    </image>
+    <item>
+      <title>How We Built 83 Backtested Trading Strategies</title>
+      <link>https://auraalpha.cc/blog/how-we-built-83-backtested-strategies</link>
+      <description>A deep dive into the methodology behind Aura Alpha&#x27;s 83 algorithmic trading strategies — from signal generation and backtesting across 1,132 symbols to walk-forward validation and the risk controls that keep them robust.</description>
+      <author>shawn@auraalpha.cc (Shawn Gallup)</author>
+      <pubDate>Thu, 19 Mar 2026 12:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://auraalpha.cc/blog/how-we-built-83-backtested-strategies</guid>
+    </item>
+    <item>
+      <title>Congressional Stock Trading: How to Track What Congress Buys</title>
+      <link>https://auraalpha.cc/blog/congressional-stock-trading-tracking-congress</link>
+      <description>Members of Congress are required by law to disclose their stock trades, and the data shows they consistently outperform the market. Here&#x27;s how the STOCK Act works, what the data reveals, and how to track politician trades on Aura Alpha.</description>
+      <author>shawn@auraalpha.cc (Shawn Gallup)</author>
+      <pubDate>Thu, 19 Mar 2026 12:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://auraalpha.cc/blog/congressional-stock-trading-tracking-congress</guid>
+    </item>
+    <item>
+      <title>The Complete Guide to Trading Bot Risk Management</title>
+      <link>https://auraalpha.cc/blog/trading-bot-risk-management-guide</link>
+      <description>Returns get the headlines, but risk management determines whether your trading bot survives. This guide covers kill switches, drawdown limits, position sizing, correlation risk, and regime detection — the essential safety systems every automated trader needs.</description>
+      <author>shawn@auraalpha.cc (Shawn Gallup)</author>
+      <pubDate>Thu, 19 Mar 2026 12:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://auraalpha.cc/blog/trading-bot-risk-management-guide</guid>
+    </item>
+    <item>
+      <title>What is Algorithmic Trading? A Beginner&#x27;s Guide</title>
+      <link>https://auraalpha.cc/blog/what-is-algorithmic-trading</link>
+      <description>Algorithmic trading uses computer programs to execute trades based on predefined rules. Learn the fundamentals, how it works, and why it&#x27;s transforming how retail and institutional investors approach the markets in 2026.</description>
+      <author>noreply@auraalpha.cc (Aura Alpha Team)</author>
+      <pubDate>Sun, 15 Mar 2026 12:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://auraalpha.cc/blog/what-is-algorithmic-trading</guid>
+    </item>
+    <item>
+      <title>How Aura Alpha&#x27;s ML Regime Detection Beats the Market</title>
+      <link>https://auraalpha.cc/blog/ml-regime-detection-beats-the-market</link>
+      <description>Markets shift between bull runs, bear crashes, sideways chop, and crisis events. Learn how Aura Alpha&#x27;s machine learning regime detection system identifies these shifts in real-time and automatically adjusts strategy allocation.</description>
+      <author>noreply@auraalpha.cc (Aura Alpha Team)</author>
+      <pubDate>Thu, 12 Mar 2026 12:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://auraalpha.cc/blog/ml-regime-detection-beats-the-market</guid>
+    </item>
+    <item>
+      <title>Paper Trading vs Live Trading: When to Make the Switch</title>
+      <link>https://auraalpha.cc/blog/paper-trading-vs-live-trading</link>
+      <description>Paper trading is essential for strategy validation, but staying in simulation mode forever means missing real opportunities. Here&#x27;s a framework for knowing when you&#x27;re ready to go live — and how to manage the transition.</description>
+      <author>noreply@auraalpha.cc (Aura Alpha Team)</author>
+      <pubDate>Sun, 08 Mar 2026 12:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://auraalpha.cc/blog/paper-trading-vs-live-trading</guid>
+    </item>
+    <item>
+      <title>The 5 Best Trading Strategies for 2026</title>
+      <link>https://auraalpha.cc/blog/best-trading-strategies-2026</link>
+      <description>From momentum breakouts to ML-driven regime allocation, these are the five trading strategy categories delivering the strongest risk-adjusted returns in 2026&#x27;s market environment.</description>
+      <author>noreply@auraalpha.cc (Aura Alpha Team)</author>
+      <pubDate>Thu, 05 Mar 2026 12:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://auraalpha.cc/blog/best-trading-strategies-2026</guid>
+    </item>
+    <item>
+      <title>Why Multi-Region Diversification Matters for Your Portfolio</title>
+      <link>https://auraalpha.cc/blog/multi-region-diversification</link>
+      <description>Most traders only trade US stocks. By expanding across 14 global regions, you reduce concentration risk, capture unique opportunities, and build a more resilient portfolio. Here&#x27;s the data and the playbook.</description>
+      <author>noreply@auraalpha.cc (Aura Alpha Team)</author>
+      <pubDate>Sun, 01 Mar 2026 12:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://auraalpha.cc/blog/multi-region-diversification</guid>
+    </item>
+  </channel>
+</rss>

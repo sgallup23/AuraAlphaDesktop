@@ -1,10 +1,10 @@
-// Hit the origin server directly — bypasses Cloudflare bot protection.
-// Cloudflare blocks non-browser HTTP clients (reqwest, curl) with Bot Fight Mode.
-// The desktop app uses this direct connection; the web app goes through Cloudflare.
+// API proxy: tries local API first (localhost:8020), falls back to cloud.
+// In standalone mode the local sidecar handles everything.
+// Cloud fallback only used if local sidecar is unreachable.
+const LOCAL_API_BASE: &str = "http://127.0.0.1:8020";
 const REMOTE_API_BASE: &str = "https://auraalpha.cc";
 
-/// IPC command: generic API proxy — bypasses browser CORS by using reqwest (Rust-side HTTP).
-/// The frontend calls this instead of fetch() to avoid Cloudflare CORS issues.
+/// IPC command: generic API proxy — tries local first, falls back to cloud.
 #[tauri::command]
 pub async fn api_proxy(
     method: String,
@@ -12,29 +12,55 @@ pub async fn api_proxy(
     body: Option<String>,
     auth_token: Option<String>,
 ) -> Result<String, String> {
-    let url = if path.starts_with("http") {
-        path
+    let rel_path = if path.starts_with("http") {
+        // Absolute URL — use as-is
+        return do_request(&method, &path, body.as_deref(), auth_token.as_deref(), 10).await;
     } else {
-        format!(
-            "{}{}{}",
-            REMOTE_API_BASE,
-            if path.starts_with('/') { "" } else { "/" },
-            path
-        )
+        path
     };
 
+    let local_url = format!(
+        "{}{}{}",
+        LOCAL_API_BASE,
+        if rel_path.starts_with('/') { "" } else { "/" },
+        rel_path
+    );
+
+    // Try local API first (fast timeout)
+    match do_request(&method, &local_url, body.as_deref(), auth_token.as_deref(), 5).await {
+        Ok(result) => Ok(result),
+        Err(_local_err) => {
+            // Fall back to cloud (short timeout — proxied networks hang forever)
+            let remote_url = format!(
+                "{}{}{}",
+                REMOTE_API_BASE,
+                if rel_path.starts_with('/') { "" } else { "/" },
+                rel_path
+            );
+            do_request(&method, &remote_url, body.as_deref(), auth_token.as_deref(), 3).await
+        }
+    }
+}
+
+async fn do_request(
+    method: &str,
+    url: &str,
+    body: Option<&str>,
+    auth_token: Option<&str>,
+    timeout_secs: u64,
+) -> Result<String, String> {
     let client = reqwest::Client::new();
     let mut req = match method.to_uppercase().as_str() {
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "DELETE" => client.delete(&url),
-        "PATCH" => client.patch(&url),
-        _ => client.get(&url),
+        "POST" => client.post(url),
+        "PUT" => client.put(url),
+        "DELETE" => client.delete(url),
+        "PATCH" => client.patch(url),
+        _ => client.get(url),
     };
 
-    req = req.timeout(std::time::Duration::from_secs(30));
+    req = req.timeout(std::time::Duration::from_secs(timeout_secs));
     req = req.header("Content-Type", "application/json");
-    req = req.header("User-Agent", "AuraAlpha-Desktop/5.0.0");
+    req = req.header("User-Agent", "AuraAlpha-Desktop/5.0.5");
     req = req.header("Accept", "application/json");
 
     if let Some(token) = auth_token {
@@ -42,7 +68,7 @@ pub async fn api_proxy(
     }
 
     if let Some(b) = body {
-        req = req.body(b);
+        req = req.body(b.to_owned());
     }
 
     match req.send().await {

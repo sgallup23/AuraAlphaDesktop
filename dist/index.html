@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/images/icon-192.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#3FB950" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="preconnect" href="https://auraalpha.cc" />
+    <link rel="dns-prefetch" href="https://api.github.com" />
+    <link rel="dns-prefetch" href="https://github.com" />
+    <!-- Fonts: loaded via CSS @font-face (no external CDN dependency) -->
+    <!-- Google Fonts CDN removed — blocks rendering on mobile/native.
+         Self-host font files or use system font stack as fallback. -->
+    <style>
+      html, body { overflow-x: hidden; width: 100%; }
+      /* Pre-React loading state — hidden once React mounts */
+      #pre-loader { display: flex; align-items: center; justify-content: center;
+        height: 100vh; background: #0B0F14; color: #90A3AF; font-family: sans-serif;
+        font-size: 14px; flex-direction: column; gap: 8px; }
+      #pre-loader .dot { width: 8px; height: 8px; background: #36BDF0; border-radius: 50%;
+        animation: pulse 1.2s ease-in-out infinite; }
+      @keyframes pulse { 0%,100% { opacity: .3; } 50% { opacity: 1; } }
+    </style>
+    <!-- Primary Meta Tags -->
+    <meta name="title" content="Aura Alpha — AI-Powered Algorithmic Trading Platform">
+    <meta name="description" content="83 ML-scored strategies, 19 supported brokers, autonomous trading agents. Replace TradingView, 3Commas, and 5 other apps with one platform. From $49/mo.">
+    <meta name="keywords" content="algorithmic trading, AI trading bot, automated trading, stock trading bot, crypto trading bot, backtesting, trading signals, IBKR, Alpaca, Kraken">
+    <meta name="robots" content="index, follow">
+    <meta name="author" content="Aura Alpha">
+    <link rel="canonical" href="https://auraalpha.cc">
+    <title>Aura Alpha — AI-Powered Algorithmic Trading Platform</title>
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://auraalpha.cc">
+    <meta property="og:title" content="Aura Alpha — AI-Powered Algorithmic Trading">
+    <meta property="og:description" content="83 ML strategies. 19 brokers. Autonomous trading agents. Replace 5 trading apps with one. From $49/mo.">
+    <meta property="og:image" content="https://auraalpha.cc/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:site_name" content="Aura Alpha">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://auraalpha.cc">
+    <meta name="twitter:title" content="Aura Alpha — AI-Powered Algorithmic Trading">
+    <meta name="twitter:description" content="83 ML strategies. 19 brokers. Autonomous trading agents. From $49/mo.">
+    <meta name="twitter:image" content="https://auraalpha.cc/og-image.png">
+    <link rel="alternate" type="application/rss+xml" title="Aura Alpha Blog" href="/rss.xml" />
+    <link rel="apple-touch-icon" sizes="192x192" href="/images/icon-192.png" />
+    <!-- Dynamic OG tags for page-specific social previews -->
+    <script>
+      (function() {
+        var path = window.location.pathname.replace(/\/$/, '') || '/';
+        var params = new URLSearchParams(window.location.search);
+        var img = 'https://auraalpha.cc/og-image.png';
+
+        var routes = {
+          '/features':              ['Platform Features', '83 strategies, autonomous trading agents, ML signal engine, 14 global regions, real-time risk controls.'],
+          '/platform':              ['Platform Overview', 'End-to-end autonomous trading platform: OHLCV pipeline, Athena signal engine, ML regime detection, multi-bot execution, and risk controls.'],
+          '/strategies-public':     ['Strategy Leaderboard', 'Browse 83 backtested strategies ranked by Sharpe ratio, win rate, and max drawdown across 14 regions.'],
+          '/strategy-lab-public':   ['Strategy Research Engine', 'Rigorous strategy research: hypothesis generation, multi-regime backtesting, walk-forward validation, and live deployment.'],
+          '/risk-engine':           ['Risk Engine', 'Institutional-grade risk controls: drawdown limits, correlation monitoring, position sizing, regime-aware exposure, and kill switch.'],
+          '/execution':             ['Execution Engine', 'Smart order routing, TWAP/VWAP execution, slippage analysis, and multi-venue support across equities, crypto, forex, and options.'],
+          '/how-it-works':          ['How It Works', 'From strategy discovery to live trading: backtesting, risk controls, and real-time monitoring explained step by step.'],
+          '/pricing-plans':         ['Pricing Plans', 'Explorer (free), Trader ($49/mo), Pro ($129/mo), Institutional ($499/mo). Start with paper trading, upgrade anytime.'],
+          '/about':                 ['About Aura Alpha', 'Mission, values, and the team behind the institutional-grade algorithmic trading platform.'],
+          '/security':              ['Security', 'Local-first architecture, bank-grade encryption, direct broker connection. Your data and credentials never leave your control.'],
+          '/faq':                   ['FAQ', 'Common questions about autonomous trading, strategies, bots, risk controls, and pricing.'],
+          '/blog':                  ['Blog', 'Insights on algorithmic trading, ML regime detection, strategy research, and platform updates.'],
+          '/desktop':               ['Desktop App', 'Full-power trading workstation: local GPU backtesting, multi-monitor support, system tray, and Cmd+K command palette.'],
+          '/mobile':                ['Mobile App', 'Monitor your trading desk from anywhere. Real-time bot telemetry, push notifications, and emergency kill switch.'],
+          '/install':               ['Install Guide', 'Step-by-step guide to installing Aura Alpha Desktop on macOS, Windows, and Linux.'],
+          '/demo':                  ['Live Demo', 'See Aura Alpha in action with live strategy signals, bot telemetry, and risk dashboards.'],
+          '/contact-sales':         ['Contact Sales', 'Reach Aura Alpha for institutional plans, custom deployments, and enterprise partnerships.'],
+          '/for-day-traders':       ['For Day Traders', 'Real-time signals, sub-second execution, momentum scanners, and intraday risk controls for active day traders.'],
+          '/for-swing-traders':     ['For Swing Traders', 'Multi-day trend strategies, ML regime detection, overnight risk management for swing traders.'],
+          '/for-systematic-traders':['For Systematic Traders', 'Walk-forward backtesting, strategy builder, factor attribution, and full automation for quant traders.'],
+          '/for-pro-teams':         ['For Pro Teams', 'Multi-seat institutional plans with shared strategy libraries, team risk controls, and API access.'],
+          '/compare/trade-ideas':   ['Aura Alpha vs Trade Ideas', 'Compare autonomous bots vs scanner alerts, backtesting depth, strategy count, and pricing.'],
+          '/compare/trendspider':   ['Aura Alpha vs TrendSpider', 'ML-powered regime detection vs pattern recognition, autonomous execution vs alerts.'],
+          '/compare/tradingview':   ['Aura Alpha vs TradingView', 'Autonomous trading bots vs charting platform, strategy engine vs Pine Script.'],
+          '/compare/quantconnect':  ['Aura Alpha vs QuantConnect', 'Turnkey strategies vs build-from-scratch, autonomous bots vs LEAN engine.'],
+          '/layla':                 ['AI Trading Bot | +34% Return', 'Autonomous bot trading 24 strategies across US, Crypto, Forex & ETFs. Watch live performance.'],
+          '/terms':                 ['Terms of Service', 'Aura Alpha Holdings LLC terms of service for the autonomous trading platform.'],
+          '/privacy':               ['Privacy Policy', 'How Aura Alpha collects, uses, and protects your personal information and trading data.'],
+          '/cookies':               ['Cookie Policy', 'Aura Alpha cookie usage policy and how to manage your preferences.'],
+          '/risk-disclosure':       ['Risk Disclosure', 'Important risk disclosures for algorithmic and autonomous trading.'],
+          '/alpha-agreement':       ['Alpha Agreement', 'Aura Alpha early access agreement for alpha program participants.'],
+          '/status':                ['Platform Status', 'Real-time health status of trading bots, API services, data pipeline, and execution infrastructure.']
+        };
+
+        var route = routes[path];
+        if (!route && params.get('ref') && path === '/register') {
+          route = ['Join me on Aura Alpha \u2014 We both get 2 months free', '83 strategies, autonomous trading agents, 19 brokers. Sign up with my link and we both get 2 months free.'];
+        }
+
+        if (route) {
+          var t = route[0], d = route[1], u = 'https://auraalpha.cc' + path;
+          document.title = t + ' | Aura Alpha';
+          var tags = {
+            'og:title': t, 'og:description': d, 'og:url': u, 'og:image': img,
+            'twitter:title': t, 'twitter:description': d, 'twitter:image': img, 'twitter:url': u
+          };
+          Object.keys(tags).forEach(function(prop) {
+            var meta = document.querySelector('meta[property="' + prop + '"], meta[name="' + prop + '"]');
+            if (meta) meta.setAttribute('content', tags[prop]);
+          });
+          var descMeta = document.querySelector('meta[name="description"]');
+          if (descMeta) descMeta.setAttribute('content', d);
+          var titleMeta = document.querySelector('meta[name="title"]');
+          if (titleMeta) titleMeta.setAttribute('content', t + ' | Aura Alpha');
+          var canonical = document.querySelector('link[rel="canonical"]');
+          if (canonical) canonical.setAttribute('href', u);
+        }
+      })();
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Aura Alpha",
+      "applicationCategory": "FinanceApplication",
+      "operatingSystem": "Web, Windows, macOS, iOS",
+      "description": "AI-powered algorithmic trading platform with 83 ML-scored strategies and 19 supported broker integrations.",
+      "url": "https://auraalpha.cc",
+      "image": "https://auraalpha.cc/images/aura-alpha-logo.png",
+      "offers": {
+        "@type": "AggregateOffer",
+        "lowPrice": "0",
+        "highPrice": "997",
+        "priceCurrency": "USD",
+        "offerCount": "6"
+      },
+      "author": {
+        "@type": "Organization",
+        "name": "Aura Alpha"
+      },
+      "aggregateRating": {
+        "@type": "AggregateRating",
+        "ratingValue": "4.8",
+        "reviewCount": "5",
+        "bestRating": "5"
+      }
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "AURA Holdings, LLC",
+      "legalName": "AURA Holdings, LLC",
+      "url": "https://auraalpha.cc",
+      "logo": "https://auraalpha.cc/images/aura-alpha-logo.png",
+      "description": "Autonomous trading platform with ML-powered bots, 83 backtested strategies, and institutional-grade risk controls across 14 global regions.",
+      "foundingDate": "2024",
+      "sameAs": [],
+      "contactPoint": {
+        "@type": "ContactPoint",
+        "email": "support@auraalpha.cc",
+        "contactType": "customer service"
+      }
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "Aura Alpha Trading Platform",
+      "url": "https://auraalpha.cc",
+      "applicationCategory": "FinanceApplication",
+      "browserRequirements": "Requires JavaScript. Works in Chrome, Firefox, Safari, Edge.",
+      "operatingSystem": "Any",
+      "featureList": [
+        "83 backtested trading strategies",
+        "ML-powered autonomous trading agents",
+        "Real-time regime detection (bull, bear, sideways, crisis)",
+        "14 global market regions",
+        "Walk-forward strategy validation",
+        "Paper trading with live market data",
+        "Institutional-grade risk controls and kill switch",
+        "Alpha Factory: automated strategy generation",
+        "Options chain analysis",
+        "Multi-chart workspace",
+        "Strategy marketplace and economy",
+        "Desktop app for Windows, macOS, and Linux"
+      ],
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD",
+        "description": "Free tier available with paper trading"
+      }
+    }
+    </script>
+    <script type="module" crossorigin src="/assets/index-CP5ik6D5.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-C5RdOJEA.js">
+    <link rel="modulepreload" crossorigin href="/assets/i18n-CAIaW0Ah.js">
+    <link rel="modulepreload" crossorigin href="/assets/motion-DriDzeSM.js">
+    <link rel="modulepreload" crossorigin href="/assets/radix-CM31WTz4.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-DpMVoLI-.css">
+  </head>
+  <body>
+    <div id="root">
+      <div id="pre-loader"><div class="dot"></div><span>Loading Aura Alpha...</span></div>
+    </div>
+  </body>
+</html>
