@@ -16,7 +16,7 @@ const DEFAULT_CONFIG = {
   strategies: [],
   allocation: { max_positions: 5, position_size_pct: 5.0 },
   risk: { max_drawdown_pct: 15.0, daily_loss_limit: 500 },
-  signals_url: 'https://auraalpha.cc/api/signals',
+  signals_url: 'http://127.0.0.1:8020/api/signals',
 };
 
 export default function BotManagerPanel() {

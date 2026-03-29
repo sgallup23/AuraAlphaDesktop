@@ -38,7 +38,7 @@ export function AuthProvider({ children }) {
       try {
         text = await invoke('api_proxy', {
           method: 'POST',
-          path: 'https://auraalpha.cc/api/auth/login',
+          path: '/api/auth/login',
           body: JSON.stringify({ username, password }),
           authToken: null,
         });

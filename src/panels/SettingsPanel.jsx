@@ -5,7 +5,7 @@ const SECTIONS = [
   {
     title: 'Connection',
     settings: [
-      { key: 'api_url', label: 'API Server', type: 'text', default: 'https://auraalpha.cc', desc: 'Backend server URL' },
+      { key: 'api_url', label: 'API Server', type: 'text', default: 'http://127.0.0.1:8020', desc: 'Backend server URL' },
     ],
   },
   {

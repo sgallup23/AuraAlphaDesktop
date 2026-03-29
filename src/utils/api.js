@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 
-const API_BASE = 'https://auraalpha.cc/api';
+const API_BASE = 'http://127.0.0.1:8020/api';
 
 let refreshPromise = null;
 
