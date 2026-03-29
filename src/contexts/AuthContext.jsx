@@ -61,6 +61,15 @@ export function AuthProvider({ children }) {
         userJson: JSON.stringify(data.user || { username }),
       });
     }
+    // Auto-start grid worker after successful login
+    setTimeout(async () => {
+      try {
+        const ws = await invoke('grid_worker_status').catch(() => null);
+        if (ws && !ws.running) {
+          await invoke('start_grid_worker').catch(() => {});
+        }
+      } catch {}
+    }, 3000);
     return data;
   }, []);
 

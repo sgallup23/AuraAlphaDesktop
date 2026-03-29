@@ -26,11 +26,11 @@ use crate::config::AppConfigState;
 /// Tauri managed state for the Rust grid worker.
 pub struct GridWorkerState {
     /// Handle to the spawned worker task (None when stopped).
-    handle: Mutex<Option<JoinHandle<()>>>,
+    pub(crate) handle: Mutex<Option<JoinHandle<()>>>,
     /// Shared status readable by IPC and the worker loop.
-    status: Arc<RwLock<WorkerStatus>>,
+    pub(crate) status: Arc<RwLock<WorkerStatus>>,
     /// Notify channel used to signal graceful shutdown.
-    shutdown: Arc<Notify>,
+    pub(crate) shutdown: Arc<Notify>,
 }
 
 impl GridWorkerState {

@@ -256,6 +256,32 @@ pub fn run() {
                 });
             }
 
+            // ── Auto-start grid worker (Rust-native, no subprocess) ──
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    // Check config to see if worker is enabled
+                    let config_state = app_handle.state::<config::AppConfigState>();
+                    let enabled = config_state.0.read().map(|c| c.worker_enabled).unwrap_or(true);
+                    if enabled {
+                        let state = app_handle.state::<worker::GridWorkerState>();
+                        let config = app_handle.state::<config::AppConfigState>();
+                        let coordinator = config.0.read().map(|c| c.coordinator_url.clone()).unwrap_or_default();
+                        if !coordinator.is_empty() {
+                            let status = state.status.clone();
+                            let shutdown = state.shutdown.clone();
+                            let jh = tokio::spawn(worker::grid_worker::run_worker(
+                                coordinator, status, shutdown,
+                            ));
+                            let mut guard = state.handle.lock().await;
+                            *guard = Some(jh);
+                            log::info!("Grid worker auto-started from Rust setup");
+                        }
+                    }
+                });
+            }
+
             // ── Navigate to auraalpha.cc ───────────────────────────
             // WebView handles TLS/Cloudflare natively; reqwest is blocked by
             // Cloudflare Bot Fight Mode, so we navigate directly instead.
