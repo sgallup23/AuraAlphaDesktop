@@ -1,8 +1,17 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { api } from '../utils/api';
 
 const AuthContext = createContext(null);
+
+// Standalone desktop user — no server required
+const STANDALONE_USER = {
+  username: 'desktop_user',
+  email: 'local@auraalpha.cc',
+  tier: 'pro',
+  display_name: 'Desktop User',
+  standalone: true,
+};
+const STANDALONE_TOKEN = 'standalone_desktop_token';
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -17,9 +26,15 @@ export function AuthProvider({ children }) {
           setToken(auth.access_token);
           const u = auth.user ? (typeof auth.user === 'string' ? JSON.parse(auth.user) : auth.user) : null;
           setUser(u);
+        } else {
+          // No saved token — auto-login as standalone desktop user
+          setToken(STANDALONE_TOKEN);
+          setUser(STANDALONE_USER);
         }
       } catch (e) {
-        console.warn('[Auth] Failed to load token:', e);
+        console.warn('[Auth] Failed to load token, entering standalone mode:', e);
+        setToken(STANDALONE_TOKEN);
+        setUser(STANDALONE_USER);
       } finally {
         setLoading(false);
       }
@@ -31,46 +46,60 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = useCallback(async (username, password, remember = true) => {
-    // Use Rust proxy to bypass CORS (Cloudflare blocks tauri://localhost origin)
-    // Retry up to 3 times (DB lock on EC2 can cause transient failures)
-    let text;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        text = await invoke('api_proxy', {
-          method: 'POST',
-          path: '/api/auth/login',
-          body: JSON.stringify({ username, password }),
-          authToken: null,
-        });
-        break;
-      } catch (e) {
-        if (attempt < 2) {
-          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-          continue;
+    // Try server login first (local API → cloud fallback)
+    try {
+      let text;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          text = await invoke('api_proxy', {
+            method: 'POST',
+            path: '/api/auth/login',
+            body: JSON.stringify({ username, password }),
+            authToken: null,
+          });
+          break;
+        } catch (e) {
+          if (attempt < 1) {
+            await new Promise(r => setTimeout(r, 1000));
+            continue;
+          }
+          throw e;
         }
-        throw new Error(typeof e === 'string' ? e : 'Connection failed — retrying...');
       }
+      const data = JSON.parse(text);
+      setToken(data.access_token);
+      setUser(data.user || { username });
+      if (remember) {
+        await invoke('save_auth_token', {
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token || '',
+          userJson: JSON.stringify(data.user || { username }),
+        });
+      }
+      // Auto-start grid worker after successful login
+      setTimeout(async () => {
+        try {
+          const ws = await invoke('grid_worker_status').catch(() => null);
+          if (ws && !ws.running) {
+            await invoke('start_grid_worker').catch(() => {});
+          }
+        } catch {}
+      }, 3000);
+      return data;
+    } catch (serverErr) {
+      // Server unreachable — fall back to standalone mode
+      console.warn('[Auth] Server login failed, entering standalone mode:', serverErr);
+      setToken(STANDALONE_TOKEN);
+      setUser({ ...STANDALONE_USER, username, display_name: username });
+      if (remember) {
+        await invoke('save_auth_token', {
+          accessToken: STANDALONE_TOKEN,
+          refreshToken: '',
+          userJson: JSON.stringify({ ...STANDALONE_USER, username }),
+        }).catch(() => {});
+      }
+      return { access_token: STANDALONE_TOKEN, user: STANDALONE_USER };
     }
-    const data = JSON.parse(text);
-    setToken(data.access_token);
-    setUser(data.user || { username });
-    if (remember) {
-      await invoke('save_auth_token', {
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token || '',
-        userJson: JSON.stringify(data.user || { username }),
-      });
-    }
-    // Auto-start grid worker after successful login
-    setTimeout(async () => {
-      try {
-        const ws = await invoke('grid_worker_status').catch(() => null);
-        if (ws && !ws.running) {
-          await invoke('start_grid_worker').catch(() => {});
-        }
-      } catch {}
-    }, 3000);
-    return data;
   }, []);
 
   const logout = useCallback(async () => {
