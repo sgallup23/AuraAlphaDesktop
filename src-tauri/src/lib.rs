@@ -282,18 +282,12 @@ pub fn run() {
                 });
             }
 
-            // ── Navigate to auraalpha.cc ───────────────────────────
-            // WebView handles TLS/Cloudflare natively; reqwest is blocked by
-            // Cloudflare Bot Fight Mode, so we navigate directly instead.
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                let url: tauri::Url = "https://auraalpha.cc".parse().unwrap();
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.navigate(url);
-                    log::info!("Navigated to auraalpha.cc");
-                }
-            });
+            // ── Use bundled frontend (local-first) ─────────────────
+            // The app uses its own bundled dist/ with local API routing.
+            // In Tauri mode: frontend connects to localhost:8020 (local API sidecar)
+            // Falls back to auraalpha.cc only if local API is unavailable.
+            // DO NOT navigate to auraalpha.cc — it blocks on networks with proxies.
+            log::info!("Using bundled frontend (local-first mode)");
 
             // ── Auto-start Local API sidecar (standalone mode) ─────
             {
