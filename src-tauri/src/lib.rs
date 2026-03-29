@@ -282,19 +282,18 @@ pub fn run() {
                 });
             }
 
-            // ── Use bundled frontend (local-first) ─────────────────
-            // The app uses its own bundled dist/ with local API routing.
-            // In Tauri mode: frontend connects to localhost:8020 (local API sidecar)
-            // Falls back to auraalpha.cc only if local API is unavailable.
-            // DO NOT navigate to auraalpha.cc — it blocks on networks with proxies.
-            log::info!("Using bundled frontend (local-first mode)");
-
-            // ── Auto-start Local API sidecar (standalone mode) ─────
+            // ── Navigate WebView to auraalpha.cc (restored v4.x pattern) ──
+            // WebView is Chrome — handles proxies and Cloudflare natively.
+            // Bundled dist/ serves as splash screen during the brief delay.
             {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let state = app_handle.state::<LocalApiState>();
-                    startup::try_start_local_api(app_handle.clone(), state).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let url: tauri::Url = "https://auraalpha.cc".parse().unwrap();
+                        let _ = window.navigate(url);
+                        log::info!("Navigated WebView to auraalpha.cc");
+                    }
                 });
             }
 
