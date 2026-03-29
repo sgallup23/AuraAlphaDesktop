@@ -22,7 +22,7 @@ struct TokenFile {
 /// Resolve a worker token using the following priority:
 /// 1. `AURA_WORKER_TOKEN` environment variable
 /// 2. `~/.aura-worker/grid_token.json` file
-/// 3. Auto-provision via POST to `{coordinator}/api/grid/provision`
+/// 3. Auto-provision via POST to `{coordinator}/api/cluster/contributor/auto-provision`
 async fn resolve_token(coordinator_url: &str) -> Result<(String, Option<String>), String> {
     // 1. Environment variable
     if let Ok(token) = std::env::var("AURA_WORKER_TOKEN") {
@@ -68,7 +68,7 @@ async fn resolve_token(coordinator_url: &str) -> Result<(String, Option<String>)
     });
 
     let resp = client
-        .post(format!("{coordinator_url}/api/grid/provision"))
+        .post(format!("{coordinator_url}/api/cluster/contributor/auto-provision"))
         .json(&body)
         .send()
         .await
@@ -116,6 +116,7 @@ async fn resolve_token(coordinator_url: &str) -> Result<(String, Option<String>)
 fn build_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .user_agent("AuraAlpha-Desktop/5.0")
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))
 }
@@ -135,7 +136,7 @@ async fn register(
     });
 
     let resp = client
-        .post(format!("{coordinator_url}/api/grid/register"))
+        .post(format!("{coordinator_url}/api/cluster/contributor/register"))
         .header("X-Worker-Token", token)
         .header("X-Worker-Id", worker_id)
         .json(&body)
@@ -179,7 +180,7 @@ async fn heartbeat(
     });
 
     let resp = client
-        .post(format!("{coordinator_url}/api/grid/heartbeat"))
+        .post(format!("{coordinator_url}/api/cluster/contributor/heartbeat"))
         .header("X-Worker-Token", token)
         .header("X-Worker-Id", worker_id)
         .json(&body)
@@ -202,7 +203,7 @@ async fn dequeue_job(
     worker_id: &str,
 ) -> Result<Option<serde_json::Value>, String> {
     let resp = client
-        .post(format!("{coordinator_url}/api/grid/dequeue"))
+        .post(format!("{coordinator_url}/api/cluster/contributor/dequeue"))
         .header("X-Worker-Token", token)
         .header("X-Worker-Id", worker_id)
         .send()
@@ -244,7 +245,7 @@ async fn complete_job(
     });
 
     let resp = client
-        .post(format!("{coordinator_url}/api/grid/complete"))
+        .post(format!("{coordinator_url}/api/cluster/contributor/complete"))
         .header("X-Worker-Token", token)
         .header("X-Worker-Id", worker_id)
         .json(&body)
@@ -280,7 +281,7 @@ async fn fail_job(
     });
 
     let resp = client
-        .post(format!("{coordinator_url}/api/grid/complete"))
+        .post(format!("{coordinator_url}/api/cluster/contributor/complete"))
         .header("X-Worker-Token", token)
         .header("X-Worker-Id", worker_id)
         .json(&body)
