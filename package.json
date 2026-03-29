@@ -1,6 +1,6 @@
 {
   "name": "aura-alpha-desktop",
-  "version": "5.0.0",
+  "version": "5.0.1",
   "description": "Aura Alpha Trading Desk \u2014 Desktop Application",
   "private": true,
   "type": "module",

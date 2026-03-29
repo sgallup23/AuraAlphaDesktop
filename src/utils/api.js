@@ -69,10 +69,9 @@ export async function api(path, options = {}) {
   const token = await getToken();
   const url = path.startsWith('http') ? path : `${API_BASE}${path.startsWith('/') ? '' : '/'}${path}`;
 
-  // Use browser fetch directly — WebView handles Cloudflare/TLS natively.
-  // Rust reqwest proxy disabled: non-browser HTTP clients get blocked by
-  // Cloudflare Bot Fight Mode, Browser Integrity Check, and DNS filters.
-  const useProxy = false;
+  // Route through Rust reqwest proxy to bypass Cloudflare CORS/bot protection.
+  // WebView origin (tauri://localhost) gets blocked by Cloudflare Bot Fight Mode.
+  const useProxy = true;
 
   if (useProxy) {
     try {
