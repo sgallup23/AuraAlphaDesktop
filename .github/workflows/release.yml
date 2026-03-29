@@ -31,11 +31,6 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -74,34 +69,7 @@ jobs:
           WIN_CRED: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
           WIN_TOTP: ${{ secrets.SSLCOM_TOTP_SECRET }}
 
-      - name: Build grid worker binary
-        run: |
-          cd grid_worker
-          pip install pyinstaller numpy polars psutil
-          pyinstaller --onefile --noconsole --name aura-grid-worker --clean --noconfirm --hidden-import=numpy --hidden-import=polars --hidden-import=psutil --collect-all polars worker.py
-
-      - name: Place grid worker sidecar (Linux)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          mkdir -p src-tauri/binaries
-          cp grid_worker/dist/aura-grid-worker src-tauri/binaries/aura-grid-worker-x86_64-unknown-linux-gnu
-          chmod +x src-tauri/binaries/aura-grid-worker-x86_64-unknown-linux-gnu
-
-      - name: Place grid worker sidecar (Windows)
-        if: matrix.platform == 'windows-latest'
-        run: |
-          mkdir -p src-tauri/binaries
-          cp grid_worker/dist/aura-grid-worker.exe src-tauri/binaries/aura-grid-worker-x86_64-pc-windows-msvc.exe
-        shell: bash
-
-      - name: Place grid worker sidecar (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          mkdir -p src-tauri/binaries
-          cp grid_worker/dist/aura-grid-worker src-tauri/binaries/aura-grid-worker-aarch64-apple-darwin
-          chmod +x src-tauri/binaries/aura-grid-worker-aarch64-apple-darwin
-
-      # ── Windows code signing: install CodeSignTool + sign grid worker sidecar ──
+      # ── Windows code signing: install CodeSignTool ──
       - name: Install CodeSignTool (Windows)
         if: matrix.platform == 'windows-latest' && steps.signing.outputs.has_windows_cert == 'true'
         shell: bash
@@ -110,28 +78,6 @@ jobs:
           unzip -o CodeSignTool.zip -d /tmp/cst || true
           CST_DIR=$(find /tmp/cst -name "CodeSignTool.bat" -exec dirname {} \; | head -1)
           echo "CST_DIR=$CST_DIR" >> "$GITHUB_ENV"
-
-      - name: Sign grid worker (Windows)
-        if: matrix.platform == 'windows-latest' && steps.signing.outputs.has_windows_cert == 'true'
-        continue-on-error: true
-        timeout-minutes: 5
-        shell: bash
-        run: |
-          "$CST_DIR/CodeSignTool.bat" sign \
-            -username="${{ secrets.SSLCOM_USERNAME }}" \
-            -password="${{ secrets.SSLCOM_PASSWORD }}" \
-            -credential_id="${{ secrets.SSLCOM_CREDENTIAL_ID }}" \
-            -totp_secret="${{ secrets.SSLCOM_TOTP_SECRET }}" \
-            -input_file_path="src-tauri/binaries/aura-grid-worker-x86_64-pc-windows-msvc.exe" \
-            -override=true
-
-      # ── macOS code signing: sign grid worker sidecar before bundling ──
-      - name: Sign grid worker (macOS)
-        if: matrix.platform == 'macos-latest' && steps.signing.outputs.has_apple_cert == 'true'
-        continue-on-error: true
-        run: |
-          codesign --force --options runtime --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
-            src-tauri/binaries/aura-grid-worker-aarch64-apple-darwin
 
       - name: Install npm dependencies
         run: npm ci

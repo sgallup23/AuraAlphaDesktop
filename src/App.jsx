@@ -1,6 +1,7 @@
 window.__APP_LOAD_TIME = Date.now();
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { PreferencesProvider } from './contexts/PreferencesContext';
+import { ConfigProvider } from './contexts/ConfigContext';
 import LoginPage from './pages/LoginPage';
 import StartupPage from './pages/StartupPage';
 import WorkspaceShell from './shell/WorkspaceShell';
@@ -126,9 +127,9 @@ function AppWithStartup() {
     setTimeout(async () => {
       try {
         const { invoke: inv } = await import('@tauri-apps/api/core');
-        const ws = await inv('research_worker_status').catch(() => null);
+        const ws = await inv('grid_worker_status').catch(() => null);
         if (ws && !ws.running) {
-          await inv('start_research_worker').catch(() => {});
+          await inv('start_grid_worker').catch(() => {});
           console.log('[App] Grid worker auto-started after login');
         }
       } catch {}
@@ -145,11 +146,13 @@ function AppWithStartup() {
   }
 
   return (
-    <AuthProvider>
-      <PreferencesProvider>
-        <AuthGate />
-      </PreferencesProvider>
-    </AuthProvider>
+    <ConfigProvider>
+      <AuthProvider>
+        <PreferencesProvider>
+          <AuthGate />
+        </PreferencesProvider>
+      </AuthProvider>
+    </ConfigProvider>
   );
 }
 

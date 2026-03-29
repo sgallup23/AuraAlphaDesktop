@@ -15,7 +15,7 @@ export default function GridComputePanel() {
     try {
       const [statusData, workerData] = await Promise.all([
         api('/intelligence/status', { silent: true }),
-        invoke('research_worker_status').catch(() => null),
+        invoke('grid_worker_status').catch(() => null),
       ]);
 
       if (statusData) setStatus(statusData);
@@ -48,10 +48,10 @@ export default function GridComputePanel() {
     let cancelled = false;
     const autoStart = async () => {
       try {
-        const ws = await invoke('research_worker_status').catch(() => null);
+        const ws = await invoke('grid_worker_status').catch(() => null);
         if (!cancelled && ws && !ws.running) {
-          await invoke('start_research_worker').catch(() => {});
-          const updated = await invoke('research_worker_status').catch(() => null);
+          await invoke('start_grid_worker').catch(() => {});
+          const updated = await invoke('grid_worker_status').catch(() => null);
           if (updated) setWorkerStatus(updated);
         }
       } catch { /* silent */ }
@@ -64,7 +64,7 @@ export default function GridComputePanel() {
   const toggleWorker = useCallback(async () => {
     setWorkerLoading(true);
     try {
-      const cmd = workerStatus?.running ? 'stop_research_worker' : 'start_research_worker';
+      const cmd = workerStatus?.running ? 'stop_grid_worker' : 'start_grid_worker';
       const result = await invoke(cmd);
       setWorkerStatus(result);
     } catch (e) {
@@ -163,8 +163,13 @@ export default function GridComputePanel() {
               <div className="text-xs font-medium text-aura-text">
                 Desktop Worker {isWorkerRunning ? 'Running' : 'Stopped'}
               </div>
-              {workerStatus?.pid && (
-                <div className="text-xs text-aura-muted font-mono">PID: {workerStatus.pid}</div>
+              {workerStatus?.worker_id && (
+                <div className="text-xs text-aura-muted font-mono">ID: {workerStatus.worker_id}</div>
+              )}
+              {workerStatus?.uptime_secs != null && (
+                <div className="text-xs text-aura-muted font-mono">
+                  Up: {Math.floor(workerStatus.uptime_secs / 3600)}h {Math.floor((workerStatus.uptime_secs % 3600) / 60)}m
+                </div>
               )}
             </div>
           </div>
@@ -180,9 +185,19 @@ export default function GridComputePanel() {
             {workerLoading ? '...' : isWorkerRunning ? 'Stop' : 'Start'}
           </button>
         </div>
-        {workerStatus?.project_path && (
-          <div className="text-xs text-aura-muted mt-1 truncate" title={workerStatus.project_path}>
-            {workerStatus.project_path}
+        {workerStatus?.coordinator_url && (
+          <div className="text-xs text-aura-muted mt-1 truncate" title={workerStatus.coordinator_url}>
+            {workerStatus.coordinator_url}
+          </div>
+        )}
+        {(workerStatus?.jobs_completed != null || workerStatus?.jobs_failed != null) && (
+          <div className="flex gap-3 mt-1 text-xs text-aura-muted font-mono">
+            {workerStatus.jobs_completed != null && (
+              <span className="text-aura-green">{workerStatus.jobs_completed} done</span>
+            )}
+            {workerStatus.jobs_failed != null && workerStatus.jobs_failed > 0 && (
+              <span className="text-aura-red">{workerStatus.jobs_failed} failed</span>
+            )}
           </div>
         )}
       </div>

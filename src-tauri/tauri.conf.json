@@ -36,9 +36,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": [
-      "binaries/aura-grid-worker"
-    ],
     "resources": [
       "sidecar/**/*"
     ],
