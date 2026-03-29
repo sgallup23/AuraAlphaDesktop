@@ -1,3 +1,5 @@
+pub mod config;
+pub mod worker;
 mod bot_manager;
 mod credential_store;
 
@@ -1225,6 +1227,8 @@ pub fn run() {
         .manage(LocalApiState {
             child: Mutex::new(None),
         })
+        .manage(config::AppConfigState::new(config::AppConfig::default()))
+        .manage(worker::GridWorkerState::new())
         .invoke_handler(tauri::generate_handler![
             // EC2 monitoring
             check_health,
@@ -1266,6 +1270,12 @@ pub fn run() {
             // Startup state machine
             startup_check,
             clean_shutdown,
+            // Config IPC
+            config::get_config,
+            // Rust grid worker
+            worker::start_grid_worker,
+            worker::stop_grid_worker,
+            worker::grid_worker_status,
         ])
         .setup(|app| {
             // ── System tray ──────────────────────────────────────
