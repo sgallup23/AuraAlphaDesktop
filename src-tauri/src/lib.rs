@@ -1,134 +1,58 @@
-pub mod config;
-pub mod worker;
-pub mod updater;
-pub mod auth;
 pub mod api_proxy;
+pub mod auth;
+pub mod config;
+pub mod local_bots;
+pub mod preferences;
+pub mod startup;
+pub mod updater;
+pub mod worker;
 mod bot_manager;
 mod credential_store;
+mod tray;
 
 use serde::Serialize;
-use std::collections::HashMap;
-use std::process::{Child, Command};
+use std::process::Child;
 use std::sync::Mutex;
-use tauri::{
-    menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WindowEvent,
-};
+use tauri::{Manager, RunEvent, WindowEvent};
 
-const HEALTH_URL: &str = "https://auraalpha.cc/api/system/health";
-const TELEMETRY_URL: &str = "https://auraalpha.cc/api/telemetry/latest";
-const REMOTE_API_URL: &str = "https://auraalpha.cc/api/remote";
+use startup::TELEMETRY_URL;
 
-/// Managed state: holds the worker child process so we can kill it on exit
-struct WorkerState {
-    child: Mutex<Option<Child>>,
+// ── Managed state ─────────────────────────────────────────────────────
+
+/// Holds the remote-worker child process so we can kill it on exit.
+pub struct WorkerState {
+    pub child: Mutex<Option<Child>>,
 }
 
-/// Managed state: holds the research worker sidecar child process
-struct ResearchWorkerState {
-    child: Mutex<Option<Child>>,
+/// Holds the research/grid worker sidecar child process.
+pub struct ResearchWorkerState {
+    pub child: Mutex<Option<Child>>,
 }
 
-/// Managed state: holds the local API sidecar process (standalone mode)
-struct LocalApiState {
-    child: Mutex<Option<Child>>,
+/// Holds the local API sidecar process (standalone mode).
+pub struct LocalApiState {
+    pub child: Mutex<Option<Child>>,
 }
 
-/// Research worker status info returned to the frontend via IPC
-#[derive(Clone, Serialize)]
-struct ResearchWorkerStatus {
-    running: bool,
-    pid: Option<u32>,
-    coordinator_url: Option<String>,
-}
+// ── Private types ─────────────────────────────────────────────────────
 
-/// Bot status info returned to the frontend via IPC
 #[derive(Clone, Serialize)]
 struct BotStatus {
     name: String,
-    status: String, // "running", "stopped", "error"
+    status: String,
     positions: u32,
     pnl_today: f64,
 }
 
-/// System health summary
-#[derive(Clone, Serialize)]
-struct HealthSummary {
-    api_up: bool,
-    bots_active: u32,
-    total_positions: u32,
-    total_pnl_today: f64,
-}
+// ── EC2 live data ─────────────────────────────────────────────────────
 
-/// Worker status info
-#[derive(Clone, Serialize)]
-struct WorkerStatus {
-    running: bool,
-    pid: Option<u32>,
-    project_path: Option<String>,
-}
-
-// ── EC2 live data helpers ─────────────────────────────────────────────
-
-/// IPC command: check API health — now parses real data from EC2
+/// IPC command: check API health — delegates to startup::fetch_health_summary.
 #[tauri::command]
-async fn check_health() -> Result<HealthSummary, String> {
-    let client = reqwest::Client::new();
-    match client
-        .get(HEALTH_URL)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {
-            let data: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| format!("Parse error: {}", e))?;
-
-            // Parse real bot data from health response
-            let bots = data.get("bots").and_then(|b| b.as_object());
-            let mut bots_active: u32 = 0;
-            let mut total_positions: u32 = 0;
-            let mut total_pnl: f64 = 0.0;
-
-            if let Some(bots_obj) = bots {
-                for (_key, info) in bots_obj {
-                    // Skip non-bot keys like "gateway_connected", "accounts", etc.
-                    if !info.is_object() || info.get("bot").is_none() {
-                        continue;
-                    }
-                    if info.get("status").and_then(|s| s.as_str()) == Some("OK") {
-                        bots_active += 1;
-                    }
-                    // Count positions from payload
-                    if let Some(payload) = info.get("payload") {
-                        if let Some(positions) = payload.get("positions").and_then(|p| p.as_array())
-                        {
-                            total_positions += positions.len() as u32;
-                        }
-                        if let Some(equity) = payload.get("equity") {
-                            total_pnl +=
-                                equity.get("day_pnl").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        }
-                    }
-                }
-            }
-
-            Ok(HealthSummary {
-                api_up: true,
-                bots_active,
-                total_positions,
-                total_pnl_today: total_pnl,
-            })
-        }
-        Ok(resp) => Err(format!("API returned status {}", resp.status())),
-        Err(e) => Err(format!("Connection failed: {}", e)),
-    }
+async fn check_health() -> Result<startup::HealthSummary, String> {
+    startup::fetch_health_summary().await
 }
 
-/// IPC command: get bot statuses from telemetry
+/// IPC command: get bot statuses from telemetry.
 #[tauri::command]
 async fn get_bot_status() -> Result<Vec<BotStatus>, String> {
     let client = reqwest::Client::new();
@@ -147,11 +71,12 @@ async fn get_bot_status() -> Result<Vec<BotStatus>, String> {
             let mut bots = Vec::new();
             if let Some(obj) = data.as_object() {
                 for (name, info) in obj {
-                    let status = if info.get("stale").and_then(|v| v.as_bool()).unwrap_or(true) {
-                        "stopped"
-                    } else {
-                        "running"
-                    };
+                    let status =
+                        if info.get("stale").and_then(|v| v.as_bool()).unwrap_or(true) {
+                            "stopped"
+                        } else {
+                            "running"
+                        };
                     let positions = info
                         .get("positions")
                         .and_then(|v| v.as_array())
@@ -177,174 +102,9 @@ async fn get_bot_status() -> Result<Vec<BotStatus>, String> {
     }
 }
 
-// ── Worker management ─────────────────────────────────────────────────
+// ── Utility IPC ───────────────────────────────────────────────────────
 
-/// Find the prodesk project directory (checks common paths)
-fn find_project_dir() -> Option<std::path::PathBuf> {
-    let home = dirs::home_dir()?;
-    let candidates = [
-        home.join("TRADING_DESK").join("prodesk"),
-        home.join("prodesk"),
-        home.join("AuraAlpha").join("prodesk"),
-    ];
-    candidates.into_iter().find(|p| {
-        p.join("ops").join("remote_worker.py").exists()
-    })
-}
-
-/// Read the REMOTE_WORKER_TOKEN from the project's .env file
-fn read_worker_token(project_dir: &std::path::Path) -> Option<String> {
-    let env_file = project_dir.join(".env");
-    if !env_file.exists() {
-        return None;
-    }
-    let content = std::fs::read_to_string(env_file).ok()?;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(val) = trimmed.strip_prefix("REMOTE_WORKER_TOKEN=") {
-            let token = val.trim().trim_matches('"').trim_matches('\'');
-            if !token.is_empty() {
-                return Some(token.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Find a Python interpreter
-fn find_python(project_dir: &std::path::Path) -> String {
-    // Prefer project venv
-    let venv_python = project_dir.join(".venv").join("bin").join("python");
-    if venv_python.exists() {
-        return venv_python.to_string_lossy().to_string();
-    }
-    let venv_python3 = project_dir.join(".venv").join("bin").join("python3");
-    if venv_python3.exists() {
-        return venv_python3.to_string_lossy().to_string();
-    }
-    // Fallback to system
-    "python3".to_string()
-}
-
-/// Spawn the remote worker process
-fn spawn_worker(project_dir: &std::path::Path) -> Result<Child, String> {
-    let worker_script = project_dir.join("ops").join("remote_worker.py");
-    if !worker_script.exists() {
-        return Err("remote_worker.py not found".to_string());
-    }
-
-    let token = read_worker_token(project_dir)
-        .ok_or_else(|| "REMOTE_WORKER_TOKEN not found in .env".to_string())?;
-
-    let python = find_python(project_dir);
-    let log_dir = project_dir.join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let log_file = std::fs::File::create(log_dir.join("remote_worker.log"))
-        .map_err(|e| format!("Cannot create log file: {}", e))?;
-    let log_err = log_file
-        .try_clone()
-        .map_err(|e| format!("Cannot clone log file: {}", e))?;
-
-    let mut cmd = Command::new(&python);
-    cmd.arg(worker_script.to_string_lossy().as_ref())
-        .current_dir(project_dir)
-        .env("REMOTE_API_URL", REMOTE_API_URL)
-        .env("REMOTE_WORKER_TOKEN", &token)
-        .env("WORKER_ID", "desktop")
-        .env("POLL_INTERVAL", "30")
-        .stdout(log_file)
-        .stderr(log_err);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    cmd.spawn().map_err(|e| format!("Failed to spawn worker: {}", e))
-}
-
-/// IPC command: start the remote worker
-#[tauri::command]
-async fn start_worker(state: tauri::State<'_, WorkerState>) -> Result<WorkerStatus, String> {
-    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
-
-    // Check if already running
-    if let Some(ref mut child) = *guard {
-        match child.try_wait() {
-            Ok(None) => {
-                return Ok(WorkerStatus {
-                    running: true,
-                    pid: Some(child.id()),
-                    project_path: find_project_dir().map(|p| p.to_string_lossy().to_string()),
-                });
-            }
-            _ => {
-                // Process exited, clear it
-                *guard = None;
-            }
-        }
-    }
-
-    let project_dir = find_project_dir().ok_or("Project directory not found")?;
-    let child = spawn_worker(&project_dir)?;
-    let pid = child.id();
-    *guard = Some(child);
-
-    Ok(WorkerStatus {
-        running: true,
-        pid: Some(pid),
-        project_path: Some(project_dir.to_string_lossy().to_string()),
-    })
-}
-
-/// IPC command: stop the remote worker
-#[tauri::command]
-async fn stop_worker(state: tauri::State<'_, WorkerState>) -> Result<WorkerStatus, String> {
-    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
-    if let Some(ref mut child) = *guard {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    *guard = None;
-
-    Ok(WorkerStatus {
-        running: false,
-        pid: None,
-        project_path: find_project_dir().map(|p| p.to_string_lossy().to_string()),
-    })
-}
-
-/// IPC command: check worker status
-#[tauri::command]
-async fn get_worker_status(state: tauri::State<'_, WorkerState>) -> Result<WorkerStatus, String> {
-    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
-    let project_path = find_project_dir().map(|p| p.to_string_lossy().to_string());
-
-    if let Some(ref mut child) = *guard {
-        match child.try_wait() {
-            Ok(None) => Ok(WorkerStatus {
-                running: true,
-                pid: Some(child.id()),
-                project_path,
-            }),
-            _ => {
-                *guard = None;
-                Ok(WorkerStatus {
-                    running: false,
-                    pid: None,
-                    project_path,
-                })
-            }
-        }
-    } else {
-        Ok(WorkerStatus {
-            running: false,
-            pid: None,
-            project_path,
-        })
-    }
-}
-
-/// IPC command: send a native desktop notification
+/// IPC command: send a native desktop notification.
 #[tauri::command]
 async fn send_notification(
     app: tauri::AppHandle,
@@ -360,13 +120,11 @@ async fn send_notification(
         .map_err(|e| format!("Notification error: {}", e))
 }
 
-/// IPC command: navigate main window to a URL
+/// IPC command: navigate main window to a URL.
 #[tauri::command]
 async fn navigate_to(app: tauri::AppHandle, url: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
-        let parsed = url
-            .parse::<tauri::Url>()
-            .map_err(|e| e.to_string())?;
+        let parsed = url.parse::<tauri::Url>().map_err(|e| e.to_string())?;
         window
             .navigate(parsed)
             .map_err(|e| format!("Navigation error: {}", e))
@@ -375,7 +133,7 @@ async fn navigate_to(app: tauri::AppHandle, url: String) -> Result<(), String> {
     }
 }
 
-/// IPC command: create a detached panel window
+/// IPC command: create a detached panel window.
 #[tauri::command]
 async fn create_panel_window(
     app: tauri::AppHandle,
@@ -384,9 +142,9 @@ async fn create_panel_window(
     width: f64,
     height: f64,
 ) -> Result<bool, String> {
-    use tauri::WebviewWindowBuilder;
-    use tauri::WebviewUrl;
-    let label = format!("panel-{}", panel_id.replace(|c: char| !c.is_alphanumeric(), "-"));
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    let label =
+        format!("panel-{}", panel_id.replace(|c: char| !c.is_alphanumeric(), "-"));
     let url_str = format!("index.html?panel={}", panel_id);
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url_str.into()))
         .title(&panel_title)
@@ -398,718 +156,16 @@ async fn create_panel_window(
     Ok(true)
 }
 
-/// IPC command: save a single user preference
-#[tauri::command]
-async fn save_preference(app: tauri::AppHandle, key: String, value: serde_json::Value) -> Result<bool, String> {
-    use tauri_plugin_store::StoreExt;
-    let store = app.store("preferences.json").map_err(|e| e.to_string())?;
-    store.set(&key, value);
-    store.save().map_err(|e| e.to_string())?;
-    Ok(true)
-}
+// ── Remote worker IPC → see startup.rs ───────────────────────────────
+// startup::start_worker, startup::stop_worker, startup::get_worker_status
 
-/// IPC command: load all user preferences
-#[tauri::command]
-async fn load_preferences(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    use tauri_plugin_store::StoreExt;
-    let store = app.store("preferences.json").map_err(|e| e.to_string())?;
-    let keys = store.keys();
-    let mut map = serde_json::Map::new();
-    for key in keys {
-        if let Some(val) = store.get(&key) {
-            map.insert(key, val);
-        }
-    }
-    Ok(serde_json::Value::Object(map))
-}
+// ── Broker / bot management IPC → see local_bots.rs ──────────────────
 
-/// IPC command: save a named workspace layout
-#[tauri::command]
-async fn save_workspace(app: tauri::AppHandle, name: String, layout_json: String) -> Result<bool, String> {
-    use tauri_plugin_store::StoreExt;
-    let store = app.store("workspaces.json").map_err(|e| e.to_string())?;
-    store.set(&name, serde_json::Value::String(layout_json));
-    store.save().map_err(|e| e.to_string())?;
-    Ok(true)
-}
+// ── Research worker sidecar IPC → see startup.rs ─────────────────────
+// startup::start_research_worker, startup::stop_research_worker,
+// startup::research_worker_status
 
-/// IPC command: load a named workspace layout
-#[tauri::command]
-async fn load_workspace(app: tauri::AppHandle, name: String) -> Result<String, String> {
-    use tauri_plugin_store::StoreExt;
-    let store = app.store("workspaces.json").map_err(|e| e.to_string())?;
-    match store.get(&name) {
-        Some(serde_json::Value::String(s)) => Ok(s),
-        _ => Err("Workspace not found".into()),
-    }
-}
-
-/// IPC command: list all saved workspace names
-#[tauri::command]
-async fn list_workspaces(app: tauri::AppHandle) -> Result<Vec<String>, String> {
-    use tauri_plugin_store::StoreExt;
-    let store = app.store("workspaces.json").map_err(|e| e.to_string())?;
-    Ok(store.keys().into_iter().collect())
-}
-
-// ── Bot Management IPC Commands ──────────────────────────────────────
-
-/// IPC command: get list of all supported brokers with credential field definitions
-#[tauri::command]
-async fn get_available_brokers() -> Result<Vec<credential_store::BrokerInfo>, String> {
-    Ok(credential_store::get_broker_definitions())
-}
-
-/// IPC command: save broker credentials to encrypted store
-#[tauri::command]
-async fn configure_broker(
-    broker: String,
-    credentials: HashMap<String, String>,
-) -> Result<bool, String> {
-    credential_store::save_credentials(&broker, &credentials)?;
-    log::info!("Saved credentials for broker: {}", broker);
-    Ok(true)
-}
-
-/// IPC command: delete stored credentials for a broker
-#[tauri::command]
-async fn delete_broker_credentials(broker: String) -> Result<bool, String> {
-    credential_store::delete_credentials(&broker)?;
-    log::info!("Deleted credentials for broker: {}", broker);
-    Ok(true)
-}
-
-/// IPC command: list brokers that have stored credentials
-#[tauri::command]
-async fn list_configured_brokers() -> Result<Vec<String>, String> {
-    Ok(credential_store::list_configured_brokers())
-}
-
-/// IPC command: start a trading bot with the given configuration
-#[tauri::command]
-async fn start_bot(
-    state: tauri::State<'_, bot_manager::BotManagerState>,
-    config: bot_manager::BotConfig,
-) -> Result<bot_manager::BotInfo, String> {
-    let mut guard = state.bots.lock().map_err(|e| e.to_string())?;
-
-    // Check if bot with this name is already running
-    if let Some(existing) = guard.get_mut(&config.bot_name) {
-        if bot_manager::check_bot_alive(&mut existing.child) {
-            return Ok(bot_manager::BotInfo {
-                bot_name: config.bot_name.clone(),
-                broker: existing.config.broker.clone(),
-                pid: Some(existing.child.id()),
-                running: true,
-                config_path: Some(existing.config_path.to_string_lossy().to_string()),
-                log_path: Some(existing.log_path.to_string_lossy().to_string()),
-                started_at: Some(existing.started_at),
-            });
-        }
-        // Process died, remove it
-        guard.remove(&config.bot_name);
-    }
-
-    let project_dir =
-        bot_manager::find_project_dir().ok_or("Project directory not found")?;
-
-    // Load broker credentials from store
-    let creds = credential_store::load_credentials(&config.broker)
-        .unwrap_or_default();
-
-    // Write bot config to file
-    let creds_json = serde_json::to_value(&creds).unwrap_or_default();
-    let config_path =
-        bot_manager::write_bot_config(&project_dir, &config, &creds_json)?;
-
-    // Build env vars for broker
-    let broker_env: HashMap<String, String> = creds;
-
-    // Spawn the bot process
-    let (child, log_path) =
-        bot_manager::spawn_bot(&project_dir, &config, &config_path, &broker_env)?;
-
-    let pid = child.id();
-    let started_at = bot_manager::now_epoch();
-
-    let info = bot_manager::BotInfo {
-        bot_name: config.bot_name.clone(),
-        broker: config.broker.clone(),
-        pid: Some(pid),
-        running: true,
-        config_path: Some(config_path.to_string_lossy().to_string()),
-        log_path: Some(log_path.to_string_lossy().to_string()),
-        started_at: Some(started_at),
-    };
-
-    guard.insert(
-        config.bot_name.clone(),
-        bot_manager::BotProcess {
-            child,
-            config,
-            config_path,
-            log_path,
-            started_at,
-        },
-    );
-
-    log::info!("Started bot '{}' (PID {})", info.bot_name, pid);
-    Ok(info)
-}
-
-/// IPC command: stop a running bot by name
-#[tauri::command]
-async fn stop_bot(
-    state: tauri::State<'_, bot_manager::BotManagerState>,
-    bot_name: String,
-) -> Result<bot_manager::BotInfo, String> {
-    let mut guard = state.bots.lock().map_err(|e| e.to_string())?;
-
-    if let Some(mut process) = guard.remove(&bot_name) {
-        bot_manager::stop_bot_process(&mut process.child)?;
-        log::info!("Stopped bot '{}'", bot_name);
-        Ok(bot_manager::BotInfo {
-            bot_name,
-            broker: process.config.broker,
-            pid: None,
-            running: false,
-            config_path: Some(process.config_path.to_string_lossy().to_string()),
-            log_path: Some(process.log_path.to_string_lossy().to_string()),
-            started_at: Some(process.started_at),
-        })
-    } else {
-        Ok(bot_manager::BotInfo {
-            bot_name,
-            broker: String::new(),
-            pid: None,
-            running: false,
-            config_path: None,
-            log_path: None,
-            started_at: None,
-        })
-    }
-}
-
-/// IPC command: get status of a specific bot
-#[tauri::command]
-async fn get_local_bot_status(
-    state: tauri::State<'_, bot_manager::BotManagerState>,
-    bot_name: String,
-) -> Result<bot_manager::BotInfo, String> {
-    let mut guard = state.bots.lock().map_err(|e| e.to_string())?;
-
-    if let Some(process) = guard.get_mut(&bot_name) {
-        let running = bot_manager::check_bot_alive(&mut process.child);
-        Ok(bot_manager::BotInfo {
-            bot_name,
-            broker: process.config.broker.clone(),
-            pid: if running { Some(process.child.id()) } else { None },
-            running,
-            config_path: Some(process.config_path.to_string_lossy().to_string()),
-            log_path: Some(process.log_path.to_string_lossy().to_string()),
-            started_at: Some(process.started_at),
-        })
-    } else {
-        Ok(bot_manager::BotInfo {
-            bot_name,
-            broker: String::new(),
-            pid: None,
-            running: false,
-            config_path: None,
-            log_path: None,
-            started_at: None,
-        })
-    }
-}
-
-/// IPC command: list all local bots and their statuses
-#[tauri::command]
-async fn list_local_bots(
-    state: tauri::State<'_, bot_manager::BotManagerState>,
-) -> Result<Vec<bot_manager::BotInfo>, String> {
-    let mut guard = state.bots.lock().map_err(|e| e.to_string())?;
-    let mut result = Vec::new();
-
-    for (name, process) in guard.iter_mut() {
-        let running = bot_manager::check_bot_alive(&mut process.child);
-        result.push(bot_manager::BotInfo {
-            bot_name: name.clone(),
-            broker: process.config.broker.clone(),
-            pid: if running { Some(process.child.id()) } else { None },
-            running,
-            config_path: Some(process.config_path.to_string_lossy().to_string()),
-            log_path: Some(process.log_path.to_string_lossy().to_string()),
-            started_at: Some(process.started_at),
-        });
-    }
-
-    Ok(result)
-}
-
-/// IPC command: read recent lines from a bot's log file
-#[tauri::command]
-async fn get_bot_log(
-    state: tauri::State<'_, bot_manager::BotManagerState>,
-    bot_name: String,
-    tail_lines: Option<usize>,
-) -> Result<String, String> {
-    let guard = state.bots.lock().map_err(|e| e.to_string())?;
-
-    if let Some(process) = guard.get(&bot_name) {
-        let content = std::fs::read_to_string(&process.log_path)
-            .map_err(|e| format!("Cannot read log: {}", e))?;
-
-        let lines: Vec<&str> = content.lines().collect();
-        let n = tail_lines.unwrap_or(100);
-        let start = if lines.len() > n { lines.len() - n } else { 0 };
-        Ok(lines[start..].join("\n"))
-    } else {
-        Err(format!("Bot '{}' not found", bot_name))
-    }
-}
-
-// ── Startup State Machine ─────────────────────────────────────────────
-
-/// IPC command: run startup checks (API reachability, crash detection, auth/broker status)
-#[tauri::command]
-async fn startup_check(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let mut status = serde_json::json!({
-        "api_reachable": false,
-        "has_auth": false,
-        "has_broker": false,
-        "previous_crash": false,
-        "needs_onboarding": true,
-    });
-
-    // 1. Check API health
-    let client = reqwest::Client::new();
-    match client
-        .get(HEALTH_URL)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            status["api_reachable"] = serde_json::Value::Bool(resp.status().is_success());
-        }
-        Err(_) => {}
-    }
-
-    // 2. Check lock file for crash detection
-    let lock_path = dirs::data_dir()
-        .unwrap_or_default()
-        .join("AuraAlpha")
-        .join(".running.lock");
-    if lock_path.exists() {
-        status["previous_crash"] = serde_json::Value::Bool(true);
-        // Clean up the stale lock
-        let _ = std::fs::remove_file(&lock_path);
-    }
-
-    // Create new lock file (crash detection for next launch)
-    if let Some(lock_dir) = lock_path.parent() {
-        let _ = std::fs::create_dir_all(lock_dir);
-    }
-    let _ = std::fs::write(&lock_path, format!("{}", std::process::id()));
-
-    // 3. Check for saved auth tokens
-    {
-        use tauri_plugin_store::StoreExt;
-        if let Ok(store) = app.store("auth.json") {
-            let access = store.get("access_token").unwrap_or(serde_json::Value::Null);
-            if access.is_string() && access.as_str().unwrap_or("") != "" && access.as_str() != Some("null") {
-                status["has_auth"] = serde_json::Value::Bool(true);
-                status["needs_onboarding"] = serde_json::Value::Bool(false);
-            }
-        }
-    }
-
-    // 4. Check for configured broker
-    let configured = credential_store::list_configured_brokers();
-    if !configured.is_empty() {
-        status["has_broker"] = serde_json::Value::Bool(true);
-    }
-
-    Ok(status)
-}
-
-/// IPC command: clean shutdown — remove lock file for crash detection
-#[tauri::command]
-async fn clean_shutdown() -> Result<(), String> {
-    let lock_path = dirs::data_dir()
-        .unwrap_or_default()
-        .join("AuraAlpha")
-        .join(".running.lock");
-    let _ = std::fs::remove_file(&lock_path);
-    Ok(())
-}
-
-// ── Research Worker Sidecar ───────────────────────────────────────────
-
-/// Find the grid worker script path (checks bundled resource dirs per-platform, then fallbacks)
-fn find_research_worker_script() -> Option<std::path::PathBuf> {
-    // Primary: grid_worker/worker.py (consolidated worker)
-    let target = std::path::Path::new("grid_worker").join("worker.py");
-    // Legacy fallback: sidecar/research_worker.py
-    let legacy = std::path::Path::new("sidecar").join("research_worker.py");
-
-    for search_target in [&target, &legacy] {
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(exe_dir) = exe.parent() {
-                // Windows / Linux AppImage: resources are next to the binary
-                let candidate = exe_dir.join(search_target);
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-
-                // macOS .app bundle: exe is at Contents/MacOS/, resources at Contents/Resources/
-                let macos_resources = exe_dir.join("../Resources").join(search_target);
-                if macos_resources.exists() {
-                    return Some(macos_resources);
-                }
-
-                // Linux .deb: exe at /usr/bin/, resources at /usr/share/<identifier>/
-                let deb_resources = std::path::Path::new("/usr/share/cc.auraalpha.desktop").join(search_target);
-                if deb_resources.exists() {
-                    return Some(deb_resources);
-                }
-
-                // Development: walk up to project root
-                let dev_candidate = exe_dir
-                    .ancestors()
-                    .find(|p| p.join(search_target).exists())
-                    .map(|p| p.join(search_target));
-                if let Some(path) = dev_candidate {
-                    return Some(path);
-                }
-            }
-        }
-        // Fallback: check home dir (dev clones)
-        if let Some(home) = dirs::home_dir() {
-            let candidate = home.join("AuraAlphaDesktop").join(search_target);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-/// On macOS, Gatekeeper strips the execute bit and attaches com.apple.quarantine
-/// xattrs on downloaded .app bundles. This prevents the bundled Python binary
-/// from running. We fix this at runtime by re-applying +x and removing quarantine
-/// attributes before attempting to spawn.
-#[cfg(target_os = "macos")]
-fn fix_gatekeeper_permissions(sidecar_dir: &std::path::Path) {
-    // Remove com.apple.quarantine xattrs from the entire sidecar directory.
-    // This is safe — the sidecar was bundled by our CI, not user-downloaded content.
-    log::info!("Removing quarantine xattrs from sidecar dir: {}", sidecar_dir.display());
-    let xattr_result = Command::new("xattr")
-        .arg("-cr")
-        .arg(sidecar_dir)
-        .output();
-    match xattr_result {
-        Ok(output) => {
-            if !output.status.success() {
-                log::warn!(
-                    "xattr -cr returned non-zero ({}): {}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-        }
-        Err(e) => log::warn!("Failed to run xattr -cr: {}", e),
-    }
-
-    // Re-apply execute permissions on bundled Python binary and any shared libs
-    let python_bin_dir = sidecar_dir.join("python").join("bin");
-    if python_bin_dir.exists() {
-        log::info!("Fixing execute permissions on: {}", python_bin_dir.display());
-        if let Err(e) = Command::new("chmod")
-            .arg("-R")
-            .arg("+x")
-            .arg(&python_bin_dir)
-            .status()
-        {
-            log::warn!("chmod +x on python/bin failed: {}", e);
-        }
-    }
-}
-
-/// Ensure the bundled Python binary has execute permissions.
-/// On macOS this is handled by fix_gatekeeper_permissions(); on other Unix
-/// systems we just set the execute bit directly via std::fs.
-#[cfg(not(target_os = "macos"))]
-fn ensure_python_executable(python_path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(python_path) {
-            let mut perms = meta.permissions();
-            let mode = perms.mode();
-            if mode & 0o111 == 0 {
-                log::info!("Adding execute permission to: {}", python_path.display());
-                perms.set_mode(mode | 0o755);
-                if let Err(e) = std::fs::set_permissions(python_path, perms) {
-                    log::warn!("Failed to chmod bundled Python: {}", e);
-                }
-            }
-        }
-    }
-}
-
-/// Locate the bundled Python binary path from the sidecar script directory.
-/// Returns (python_path_string, is_bundled).
-fn find_python_for_worker(script: &std::path::Path) -> (String, bool) {
-    let mut found = String::from("python3");
-    let mut is_bundled = false;
-
-    // Check for bundled Python next to the worker script
-    if let Some(script_dir) = script.parent() {
-        // Unix: grid_worker/python/bin/python3 or sidecar/python/bin/python3
-        let bundled_unix = script_dir.join("python").join("bin").join("python3");
-        // Windows: grid_worker/python/python.exe or sidecar/python/python.exe
-        let bundled_win = script_dir.join("python").join("python.exe");
-        // Also check one level up (macOS Resources/grid_worker/python/... or sidecar/python/...)
-        let bundled_unix_res = script_dir.parent()
-            .map(|p| {
-                let grid = p.join("grid_worker").join("python").join("bin").join("python3");
-                if grid.exists() { return grid; }
-                p.join("sidecar").join("python").join("bin").join("python3")
-            })
-            .unwrap_or_default();
-
-        if bundled_unix.exists() {
-            found = bundled_unix.to_string_lossy().to_string();
-            is_bundled = true;
-            log::info!("Using bundled Python: {}", found);
-        } else if bundled_win.exists() {
-            found = bundled_win.to_string_lossy().to_string();
-            is_bundled = true;
-            log::info!("Using bundled Python (Windows): {}", found);
-        } else if bundled_unix_res.exists() {
-            found = bundled_unix_res.to_string_lossy().to_string();
-            is_bundled = true;
-            log::info!("Using bundled Python (Resources): {}", found);
-        }
-    }
-
-    // Fallback: prodesk venv or system python
-    if found == "python3" {
-        if let Some(home) = dirs::home_dir() {
-            let prodesk_venv = home.join("TRADING_DESK").join("prodesk")
-                .join(".venv").join("bin").join("python");
-            if prodesk_venv.exists() {
-                found = prodesk_venv.to_string_lossy().to_string();
-            }
-        }
-    }
-
-    (found, is_bundled)
-}
-
-/// Spawn the research worker sidecar process.
-///
-/// Includes retry logic (up to 3 attempts with 5s delay) and Gatekeeper
-/// permission fixes on macOS to handle quarantine on downloaded .app bundles.
-fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result<Child, String> {
-    // Find the compiled grid worker sidecar binary
-    let binary_name = if cfg!(target_os = "windows") {
-        "aura-grid-worker.exe"
-    } else {
-        "aura-grid-worker"
-    };
-
-    let binary = find_sidecar_binary(binary_name)
-        .or_else(|| find_research_worker_script()) // fallback to Python script
-        .ok_or_else(|| "Grid worker binary not found".to_string())?;
-
-    let use_python = binary.extension().map_or(false, |ext| ext == "py");
-
-    // Fix Gatekeeper permissions on macOS
-    #[cfg(target_os = "macos")]
-    if let Some(dir) = binary.parent() {
-        fix_gatekeeper_permissions(dir);
-    }
-
-    // Ensure executable on Unix
-    #[cfg(unix)]
-    if !use_python {
-        let _ = std::fs::set_permissions(&binary, std::os::unix::fs::PermissionsExt::from_mode(0o755));
-    }
-
-    // Create log + token directories
-    let data_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local").join("share"))
-        .join("cc.auraalpha.desktop");
-    let log_dir = data_dir.join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let _ = std::fs::create_dir_all(&data_dir);
-
-    let log_file = std::fs::File::create(log_dir.join("research_worker.log"))
-        .map_err(|e| format!("Cannot create log file: {}", e))?;
-    let log_err = log_file.try_clone()
-        .map_err(|e| format!("Cannot clone log file: {}", e))?;
-
-    let mut cmd = if use_python {
-        // Legacy Python path
-        let (python, _) = find_python_for_worker(&binary);
-        let mut c = Command::new(&python);
-        c.arg(binary.to_string_lossy().as_ref());
-        c
-    } else {
-        // Compiled sidecar binary — no Python needed
-        Command::new(binary.to_string_lossy().as_ref())
-    };
-    cmd.arg("--coordinator-url").arg(coordinator_url)
-        .arg("--max-parallel").arg(max_parallel.to_string())
-        .arg("--verbose")
-        .env("GRID_TOKEN_DIR", data_dir.to_string_lossy().as_ref())
-        .stdout(log_file)
-        .stderr(log_err);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    let label = if use_python { "Python" } else { "binary" };
-    cmd.spawn().map_err(|e| format!("Failed to start grid worker ({}): {}", label, e))
-}
-
-fn find_sidecar_binary(name: &str) -> Option<std::path::PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            // Next to binary (Windows/Linux installed)
-            let candidate = exe_dir.join(name);
-            if candidate.exists() { return Some(candidate); }
-            // macOS: Contents/MacOS/ → Contents/Resources/
-            let macos = exe_dir.join("../Resources").join(name);
-            if macos.exists() { return Some(macos); }
-            // Linux .deb: /usr/share/<id>/
-            let deb = std::path::Path::new("/usr/share/cc.auraalpha.desktop").join(name);
-            if deb.exists() { return Some(deb); }
-            // Dev: walk up to project root
-            for ancestor in exe_dir.ancestors() {
-                let dev = ancestor.join("src-tauri").join("binaries").join(name);
-                if dev.exists() { return Some(dev); }
-                // Also check target/release and target/debug for compiled binary
-                let release = ancestor.join("src-tauri").join("target").join("release").join(name);
-                if release.exists() { return Some(release); }
-                let debug = ancestor.join("src-tauri").join("target").join("debug").join(name);
-                if debug.exists() { return Some(debug); }
-            }
-            // Dev: check for triple-suffixed binary in binaries/ (Tauri convention)
-            if cfg!(target_os = "linux") {
-                let triple_name = format!("{}-x86_64-unknown-linux-gnu", name);
-                for ancestor in exe_dir.ancestors() {
-                    let dev = ancestor.join("src-tauri").join("binaries").join(&triple_name);
-                    if dev.exists() { return Some(dev); }
-                }
-            }
-        }
-    }
-    // Home dir fallback
-    if let Some(home) = dirs::home_dir() {
-        let candidate = home.join("AuraAlphaDesktop").join("src-tauri").join("binaries").join(name);
-        if candidate.exists() { return Some(candidate); }
-        // Also check grid_worker/dist for PyInstaller-built binary
-        let dist = home.join("AuraAlphaDesktop").join("grid_worker").join("dist").join(name);
-        if dist.exists() { return Some(dist); }
-    }
-    None
-}
-
-/// IPC command: start the research worker sidecar
-#[tauri::command]
-async fn start_research_worker(
-    state: tauri::State<'_, ResearchWorkerState>,
-    coordinator_url: Option<String>,
-    max_parallel: Option<u32>,
-) -> Result<ResearchWorkerStatus, String> {
-    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
-
-    // Check if already running
-    if let Some(ref mut child) = *guard {
-        match child.try_wait() {
-            Ok(None) => {
-                return Ok(ResearchWorkerStatus {
-                    running: true,
-                    pid: Some(child.id()),
-                    coordinator_url: Some(coordinator_url.unwrap_or_default()),
-                });
-            }
-            _ => {
-                *guard = None;
-            }
-        }
-    }
-
-    let url = coordinator_url.unwrap_or_else(|| "https://auraalpha.cc".to_string());
-    let par = max_parallel.unwrap_or(2);
-
-    let child = spawn_research_worker(&url, par)?;
-    let pid = child.id();
-    *guard = Some(child);
-
-    log::info!("Research worker started (PID {})", pid);
-    Ok(ResearchWorkerStatus {
-        running: true,
-        pid: Some(pid),
-        coordinator_url: Some(url),
-    })
-}
-
-/// IPC command: stop the research worker sidecar
-#[tauri::command]
-async fn stop_research_worker(
-    state: tauri::State<'_, ResearchWorkerState>,
-) -> Result<ResearchWorkerStatus, String> {
-    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
-    if let Some(ref mut child) = *guard {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    *guard = None;
-
-    log::info!("Research worker stopped");
-    Ok(ResearchWorkerStatus {
-        running: false,
-        pid: None,
-        coordinator_url: None,
-    })
-}
-
-/// IPC command: check research worker status
-#[tauri::command]
-async fn research_worker_status(
-    state: tauri::State<'_, ResearchWorkerState>,
-) -> Result<ResearchWorkerStatus, String> {
-    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
-
-    if let Some(ref mut child) = *guard {
-        match child.try_wait() {
-            Ok(None) => Ok(ResearchWorkerStatus {
-                running: true,
-                pid: Some(child.id()),
-                coordinator_url: None,
-            }),
-            _ => {
-                *guard = None;
-                Ok(ResearchWorkerStatus {
-                    running: false,
-                    pid: None,
-                    coordinator_url: None,
-                })
-            }
-        }
-    } else {
-        Ok(ResearchWorkerStatus {
-            running: false,
-            pid: None,
-            coordinator_url: None,
-        })
-    }
-}
+// ── App entry point ───────────────────────────────────────────────────
 
 pub fn run() {
     tauri::Builder::default()
@@ -1120,6 +176,7 @@ pub fn run() {
         // window-state removed — was restoring corrupt position causing black screen
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        // ── Managed state ──
         .manage(WorkerState {
             child: Mutex::new(None),
         })
@@ -1132,6 +189,7 @@ pub fn run() {
         })
         .manage(config::AppConfigState::new(config::AppConfig::default()))
         .manage(worker::GridWorkerState::new())
+        // ── IPC handler ──
         .invoke_handler(tauri::generate_handler![
             // EC2 monitoring
             check_health,
@@ -1148,33 +206,34 @@ pub fn run() {
             // Multi-window panels
             create_panel_window,
             // Preferences & workspaces
-            save_preference,
-            load_preferences,
-            save_workspace,
-            load_workspace,
-            list_workspaces,
+            preferences::save_preference,
+            preferences::load_preferences,
+            preferences::save_workspace,
+            preferences::load_workspace,
+            preferences::list_workspaces,
+            preferences::delete_workspace,
             // Remote worker
-            start_worker,
-            stop_worker,
-            get_worker_status,
+            startup::start_worker,
+            startup::stop_worker,
+            startup::get_worker_status,
             // Broker management
-            get_available_brokers,
-            configure_broker,
-            delete_broker_credentials,
-            list_configured_brokers,
+            local_bots::get_available_brokers,
+            local_bots::configure_broker,
+            local_bots::delete_broker_credentials,
+            local_bots::list_configured_brokers,
             // Local bot management
-            start_bot,
-            stop_bot,
-            get_local_bot_status,
-            list_local_bots,
-            get_bot_log,
+            local_bots::start_bot,
+            local_bots::stop_bot,
+            local_bots::get_local_bot_status,
+            local_bots::list_local_bots,
+            local_bots::get_bot_log,
             // Research worker sidecar
-            start_research_worker,
-            stop_research_worker,
-            research_worker_status,
+            startup::start_research_worker,
+            startup::stop_research_worker,
+            startup::research_worker_status,
             // Startup state machine
-            startup_check,
-            clean_shutdown,
+            startup::startup_check,
+            startup::clean_shutdown,
             // Config IPC
             config::get_config,
             // Rust grid worker
@@ -1183,249 +242,10 @@ pub fn run() {
             worker::grid_worker_status,
         ])
         .setup(|app| {
-            // ── System tray ──────────────────────────────────────
-            let show = MenuItem::with_id(app, "show", "Show Aura Alpha", true, None::<&str>)?;
-            let health = MenuItem::with_id(app, "health", "Check Health", true, None::<&str>)?;
-            let worker_item =
-                MenuItem::with_id(app, "worker", "Start Worker", true, None::<&str>)?;
-            let research_item =
-                MenuItem::with_id(app, "research", "Research: Start", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            // ── System tray + auto-start workers ──────────────────
+            tray::setup_tray(app)?;
 
-            let menu = Menu::with_items(app, &[&show, &health, &worker_item, &research_item, &quit])?;
-
-            let _tray = TrayIconBuilder::new()
-                .menu(&menu)
-                .tooltip("Aura Alpha — Trading Desk")
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
-                    "health" => {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            match check_health().await {
-                                Ok(h) => {
-                                    let status = if h.api_up { "Healthy" } else { "Down" };
-                                    let _ = send_notification(
-                                        app,
-                                        "Aura Alpha Health".to_string(),
-                                        format!(
-                                            "API: {} | Bots: {} | Positions: {} | Day P&L: ${:.2}",
-                                            status, h.bots_active, h.total_positions, h.total_pnl_today
-                                        ),
-                                    )
-                                    .await;
-                                }
-                                Err(e) => {
-                                    let _ = send_notification(
-                                        app,
-                                        "Aura Alpha Health".to_string(),
-                                        format!("Health check failed: {}", e),
-                                    )
-                                    .await;
-                                }
-                            }
-                        });
-                    }
-                    "worker" => {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let state = app.state::<WorkerState>();
-                            match start_worker(state).await {
-                                Ok(ws) if ws.running => {
-                                    let _ = send_notification(
-                                        app,
-                                        "Compute Worker".to_string(),
-                                        format!("Worker started (PID {})", ws.pid.unwrap_or(0)),
-                                    )
-                                    .await;
-                                }
-                                Ok(_) => {
-                                    let _ = send_notification(
-                                        app,
-                                        "Compute Worker".to_string(),
-                                        "Worker failed to start".to_string(),
-                                    )
-                                    .await;
-                                }
-                                Err(e) => {
-                                    let _ = send_notification(
-                                        app,
-                                        "Compute Worker".to_string(),
-                                        format!("Error: {}", e),
-                                    )
-                                    .await;
-                                }
-                            }
-                        });
-                    }
-                    "research" => {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let state = app.state::<ResearchWorkerState>();
-                            // Toggle: check if running via status command
-                            let is_running = match research_worker_status(state.clone()).await {
-                                Ok(s) => s.running,
-                                Err(_) => false,
-                            };
-                            if is_running {
-                                // Stop it
-                                match stop_research_worker(state).await {
-                                    Ok(_) => {
-                                        let _ = send_notification(
-                                            app,
-                                            "Research Worker".to_string(),
-                                            "Research worker stopped".to_string(),
-                                        ).await;
-                                    }
-                                    Err(e) => {
-                                        let _ = send_notification(
-                                            app,
-                                            "Research Worker".to_string(),
-                                            format!("Stop error: {}", e),
-                                        ).await;
-                                    }
-                                }
-                            } else {
-                                // Start it
-                                match start_research_worker(state, None, None).await {
-                                    Ok(rs) if rs.running => {
-                                        let _ = send_notification(
-                                            app,
-                                            "Research Worker".to_string(),
-                                            format!("Research worker started (PID {})", rs.pid.unwrap_or(0)),
-                                        ).await;
-                                    }
-                                    Ok(_) => {
-                                        let _ = send_notification(
-                                            app,
-                                            "Research Worker".to_string(),
-                                            "Research worker failed to start".to_string(),
-                                        ).await;
-                                    }
-                                    Err(e) => {
-                                        let _ = send_notification(
-                                            app,
-                                            "Research Worker".to_string(),
-                                            format!("Error: {}", e),
-                                        ).await;
-                                    }
-                                }
-                            }
-                        });
-                    }
-                    "quit" => {
-                        // Kill worker on quit
-                        let state = app.state::<WorkerState>();
-                        if let Ok(mut guard) = state.child.lock() {
-                            if let Some(ref mut child) = *guard {
-                                let _ = child.kill();
-                                let _ = child.wait();
-                            }
-                            *guard = None;
-                        }
-                        // Kill research worker on quit
-                        let research_state = app.state::<ResearchWorkerState>();
-                        if let Ok(mut guard) = research_state.child.lock() {
-                            if let Some(ref mut child) = *guard {
-                                let _ = child.kill();
-                                let _ = child.wait();
-                            }
-                            *guard = None;
-                        }
-                        // Kill all local bots on quit
-                        let bot_state = app.state::<bot_manager::BotManagerState>();
-                        if let Ok(mut guard) = bot_state.bots.lock() {
-                            for (name, process) in guard.iter_mut() {
-                                log::info!("Stopping bot '{}' on quit", name);
-                                let _ = bot_manager::stop_bot_process(&mut process.child);
-                            }
-                            guard.clear();
-                        }
-                        app.exit(0);
-                    }
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
-                })
-                .build(app)?;
-
-            // ── Auto-start remote worker if project found ─────────
-            let worker_state = app.state::<WorkerState>();
-            if let Some(project_dir) = find_project_dir() {
-                match spawn_worker(&project_dir) {
-                    Ok(child) => {
-                        log::info!(
-                            "Auto-started remote worker (PID {}) from {}",
-                            child.id(),
-                            project_dir.display()
-                        );
-                        if let Ok(mut guard) = worker_state.child.lock() {
-                            *guard = Some(child);
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("Could not auto-start worker: {}", e);
-                    }
-                }
-            } else {
-                log::info!("No project directory found — worker not auto-started. \
-                    Optimization and backtest jobs will remain queued until a worker connects.");
-            }
-
-            // ── Auto-start research worker sidecar ─────────────────────
-            let research_state = app.state::<ResearchWorkerState>();
-            let has_worker = find_sidecar_binary(if cfg!(target_os = "windows") {
-                "aura-grid-worker.exe"
-            } else {
-                "aura-grid-worker"
-            }).is_some() || find_research_worker_script().is_some();
-            if has_worker {
-                let coordinator_url = "https://auraalpha.cc";
-                match spawn_research_worker(coordinator_url, 2) {
-                    Ok(child) => {
-                        log::info!(
-                            "Auto-started research worker sidecar (PID {})",
-                            child.id()
-                        );
-                        if let Ok(mut guard) = research_state.child.lock() {
-                            *guard = Some(child);
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Could not auto-start research worker: {}", e);
-                        log::error!(
-                            "=== GRID WORKER TROUBLESHOOTING ===\n\
-                             If you are on macOS and downloaded this .app from the internet:\n\
-                             1. Open System Settings > Privacy & Security\n\
-                             2. Look for a blocked app message and click 'Open Anyway'\n\
-                             3. Or run in Terminal: xattr -cr /Applications/Aura\\ Alpha.app\n\
-                             4. Then restart the application.\n\
-                             The bundled Python binary may have been quarantined by Gatekeeper."
-                        );
-                    }
-                }
-            } else {
-                log::info!("Grid worker binary and script both not found — sidecar not auto-started.");
-            }
-
-            // ── Safety net: show window after 3s even if JS fails ────
+            // ── Safety net: show window after 3s even if JS fails ──
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -1436,10 +256,9 @@ pub fn run() {
                 });
             }
 
-            // ── Navigate to auraalpha.cc ────
-            // Navigate directly — WebView handles TLS/Cloudflare natively.
-            // No reqwest health check needed (reqwest gets blocked by Cloudflare
-            // Bot Fight Mode and DNS filters as a non-browser client).
+            // ── Navigate to auraalpha.cc ───────────────────────────
+            // WebView handles TLS/Cloudflare natively; reqwest is blocked by
+            // Cloudflare Bot Fight Mode, so we navigate directly instead.
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -1450,49 +269,12 @@ pub fn run() {
                 }
             });
 
-            // ── Auto-start Local API sidecar (standalone mode) ──
+            // ── Auto-start Local API sidecar (standalone mode) ─────
             {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app_handle.state::<LocalApiState>();
-                    let sidecar_dir = app_handle
-                        .path()
-                        .resource_dir()
-                        .unwrap_or_default()
-                        .join("sidecar")
-                        .join("local_api");
-
-                    // Try to start local API
-                    match Command::new("python3")
-                        .arg(sidecar_dir.join("main.py"))
-                        .current_dir(&sidecar_dir)
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn()
-                    {
-                        Ok(child) => {
-                            log::info!("Local API started (PID {})", child.id());
-                            *state.child.lock().unwrap() = Some(child);
-                        }
-                        Err(e) => {
-                            // Try 'python' instead of 'python3' (Windows)
-                            match Command::new("python")
-                                .arg(sidecar_dir.join("main.py"))
-                                .current_dir(&sidecar_dir)
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn()
-                            {
-                                Ok(child) => {
-                                    log::info!("Local API started via python (PID {})", child.id());
-                                    *state.child.lock().unwrap() = Some(child);
-                                }
-                                Err(_) => {
-                                    log::warn!("Local API failed to start: {}. Cloud mode only.", e);
-                                }
-                            }
-                        }
-                    }
+                    startup::try_start_local_api(app_handle.clone(), state).await;
                 });
             }
 
@@ -1501,7 +283,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| match event {
-            // Minimize to tray instead of closing
+            // Minimize to tray on window close
             RunEvent::WindowEvent {
                 label,
                 event: WindowEvent::CloseRequested { api, .. },

@@ -5,6 +5,8 @@ import { ConfigProvider } from './contexts/ConfigContext';
 import LoginPage from './pages/LoginPage';
 import StartupPage from './pages/StartupPage';
 import WorkspaceShell from './shell/WorkspaceShell';
+import ForceUpdateModal from './components/ForceUpdateModal';
+import UpdateAvailableBanner from './components/UpdateAvailableBanner';
 import { Suspense, Component, useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { PANELS } from './docking/panelRegistry';
@@ -109,6 +111,13 @@ function AppWithStartup() {
   // 'startup' = show startup screen, 'app' = show normal auth flow
   const [phase, setPhase] = useState('startup');
 
+  // Version enforcement state
+  // null = not yet checked, object = result from check_for_update
+  const [updateInfo, setUpdateInfo] = useState(null);
+  // latestVersion fetched from update_endpoint for the soft-update banner
+  const [latestVersion, setLatestVersion] = useState(null);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+
   // Register clean shutdown handler
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -120,9 +129,44 @@ function AppWithStartup() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, []);
 
+  // Run version check as soon as startup transitions to 'app'.
+  // check_for_update reads AppConfigState which is populated during Tauri setup,
+  // so by the time StartupPage calls onReady/onNeedsLogin the config is ready.
+  const runVersionCheck = useCallback(async () => {
+    try {
+      const info = await invoke('check_for_update');
+      setUpdateInfo(info);
+
+      // If not force-required, try to learn the latest available version from
+      // the update_endpoint so the soft banner can show a meaningful label.
+      if (!info.update_required && info.update_endpoint) {
+        try {
+          const res = await fetch(info.update_endpoint, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            // Support common update-manifest shapes: { version } or { latest_version }
+            const ver = data.version || data.latest_version || null;
+            if (ver) setLatestVersion(ver);
+          }
+        } catch {
+          // Non-fatal — banner simply won't appear without a latest version
+        }
+      }
+    } catch (err) {
+      console.warn('[App] check_for_update failed:', err);
+      // Non-fatal — proceed normally if the command errors
+      setUpdateInfo({ update_required: false });
+    }
+  }, []);
+
   const handleReady = useCallback(() => {
     // Auth was restored from store — go straight to app (AuthContext will pick it up)
     setPhase('app');
+    runVersionCheck();
     // Auto-start grid worker after login (5s delay for app to settle)
     setTimeout(async () => {
       try {
@@ -134,25 +178,55 @@ function AppWithStartup() {
         }
       } catch {}
     }, 5000);
-  }, []);
+  }, [runVersionCheck]);
 
   const handleNeedsLogin = useCallback(() => {
     // No saved auth — show login via the normal AuthGate flow
     setPhase('app');
-  }, []);
+    runVersionCheck();
+  }, [runVersionCheck]);
 
   if (phase === 'startup') {
     return <StartupPage onReady={handleReady} onNeedsLogin={handleNeedsLogin} />;
   }
 
+  // Block the entire app if the running version is below the enforced minimum
+  if (updateInfo?.update_required) {
+    return (
+      <ForceUpdateModal
+        currentVersion={updateInfo.current_version}
+        minimumVersion={updateInfo.minimum_version}
+        downloadUrl={updateInfo.update_endpoint}
+      />
+    );
+  }
+
+  // Determine whether the soft-update banner should be shown:
+  // latestVersion must be known and greater than current_version, and not dismissed
+  const showBanner =
+    !bannerDismissed &&
+    latestVersion != null &&
+    updateInfo != null &&
+    latestVersion !== updateInfo.current_version;
+
   return (
-    <ConfigProvider>
-      <AuthProvider>
-        <PreferencesProvider>
-          <AuthGate />
-        </PreferencesProvider>
-      </AuthProvider>
-    </ConfigProvider>
+    <>
+      {showBanner && (
+        <UpdateAvailableBanner
+          latestVersion={latestVersion}
+          currentVersion={updateInfo?.current_version}
+          downloadUrl={updateInfo?.update_endpoint}
+          onDismiss={() => setBannerDismissed(true)}
+        />
+      )}
+      <ConfigProvider>
+        <AuthProvider>
+          <PreferencesProvider>
+            <AuthGate />
+          </PreferencesProvider>
+        </AuthProvider>
+      </ConfigProvider>
+    </>
   );
 }
 
