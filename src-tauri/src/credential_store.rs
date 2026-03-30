@@ -1,11 +1,18 @@
-//! Credential Store — encrypted broker credential management using OS keychain.
+//! Credential Store — secure broker credential management using OS keychain.
 //!
-//! Uses Tauri's plugin-store with OS-level encryption to store broker API keys,
-//! tokens, and passwords. Credentials never leave the user's machine.
+//! Primary: OS-native keychain via `keyring` crate
+//!   - Windows: Windows Credential Manager (DPAPI)
+//!   - macOS: Keychain
+//!   - Linux: Secret Service (GNOME Keyring / KWallet)
+//!
+//! Fallback: Encrypted file with machine-specific key (for headless Linux, etc.)
+//! Credentials never leave the user's machine.
 
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+const SERVICE_NAME: &str = "cc.auraalpha.desktop";
 
 /// Broker credential field definitions
 #[derive(Clone, Debug, Serialize)]
@@ -257,92 +264,286 @@ pub fn get_broker_definitions() -> Vec<BrokerInfo> {
     ]
 }
 
-/// Get the credential store file path
-pub fn store_path() -> PathBuf {
+// ── Keyring-based secure storage ──────────────────────────────────────
+
+/// Try to store data in OS keychain. Returns Ok(()) on success, Err on failure.
+fn keyring_set(username: &str, data: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(SERVICE_NAME, username)
+        .map_err(|e| format!("Keyring entry error: {}", e))?;
+    entry.set_password(data)
+        .map_err(|e| format!("Keyring set error: {}", e))
+}
+
+/// Try to load data from OS keychain. Returns Ok(data) or Err.
+fn keyring_get(username: &str) -> Result<String, String> {
+    let entry = keyring::Entry::new(SERVICE_NAME, username)
+        .map_err(|e| format!("Keyring entry error: {}", e))?;
+    entry.get_password()
+        .map_err(|e| format!("Keyring get error: {}", e))
+}
+
+/// Try to delete data from OS keychain.
+fn keyring_delete(username: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(SERVICE_NAME, username)
+        .map_err(|e| format!("Keyring entry error: {}", e))?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        // Not found is fine — already deleted
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("Keyring delete error: {}", e)),
+    }
+}
+
+// ── Encrypted file fallback ───────────────────────────────────────────
+//
+// For headless Linux or environments without a Secret Service daemon,
+// we fall back to an encrypted JSON file. The encryption key is derived
+// from a machine-specific fingerprint (hostname + username + machine-id).
+
+mod encrypted_fallback {
+    use sha2::{Sha256, Digest};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    /// Derive a 32-byte encryption key from machine-specific data.
+    /// This is NOT a substitute for a proper keychain — it protects against
+    /// casual file browsing but not a determined attacker with local access.
+    fn derive_machine_key() -> [u8; 32] {
+        let mut hasher = Sha256::new();
+
+        // Machine hostname
+        if let Ok(host) = hostname::get() {
+            hasher.update(host.to_string_lossy().as_bytes());
+        }
+
+        // Current OS username
+        hasher.update(whoami().as_bytes());
+
+        // Linux machine-id (stable across reboots)
+        if let Ok(mid) = std::fs::read_to_string("/etc/machine-id") {
+            hasher.update(mid.trim().as_bytes());
+        } else if let Ok(mid) = std::fs::read_to_string("/var/lib/dbus/machine-id") {
+            hasher.update(mid.trim().as_bytes());
+        }
+
+        // Static salt to differentiate from other apps using same approach
+        hasher.update(b"cc.auraalpha.desktop.credential-fallback.v1");
+
+        hasher.finalize().into()
+    }
+
+    fn whoami() -> String {
+        std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "unknown".to_string())
+    }
+
+    /// XOR-based encryption with SHA-256 key stream.
+    /// Not AES, but sufficient for a fallback on headless Linux where the
+    /// alternative was plaintext JSON. The key never leaves the machine.
+    fn xor_encrypt(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
+        let mut result = Vec::with_capacity(data.len());
+        for (i, byte) in data.iter().enumerate() {
+            result.push(byte ^ key[i % 32]);
+        }
+        result
+    }
+
+    fn fallback_path() -> PathBuf {
+        let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+        path.push("com.auraalpha.desktop");
+        path.push("credentials.enc");
+        path
+    }
+
+    pub fn load_store() -> HashMap<String, HashMap<String, String>> {
+        let path = fallback_path();
+        if !path.exists() {
+            return HashMap::new();
+        }
+        let encrypted = match std::fs::read(&path) {
+            Ok(d) => d,
+            Err(_) => return HashMap::new(),
+        };
+        let key = derive_machine_key();
+        let decrypted = xor_encrypt(&encrypted, &key);
+        let json_str = match String::from_utf8(decrypted) {
+            Ok(s) => s,
+            Err(_) => return HashMap::new(),
+        };
+        serde_json::from_str(&json_str).unwrap_or_default()
+    }
+
+    pub fn save_store(store: &HashMap<String, HashMap<String, String>>) -> Result<(), String> {
+        let path = fallback_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create store dir: {}", e))?;
+        }
+        let json = serde_json::to_string(store).map_err(|e| e.to_string())?;
+        let key = derive_machine_key();
+        let encrypted = xor_encrypt(json.as_bytes(), &key);
+
+        // Atomic write: write to temp file then rename
+        let tmp_path = path.with_extension("enc.tmp");
+        std::fs::write(&tmp_path, &encrypted)
+            .map_err(|e| format!("Cannot write encrypted store: {}", e))?;
+        std::fs::rename(&tmp_path, &path)
+            .map_err(|e| format!("Cannot rename temp store: {}", e))?;
+        Ok(())
+    }
+
+    pub fn save_credentials(broker: &str, fields: &HashMap<String, String>) -> Result<(), String> {
+        let mut store = load_store();
+        store.insert(broker.to_string(), fields.clone());
+        save_store(&store)
+    }
+
+    pub fn load_credentials(broker: &str) -> Result<HashMap<String, String>, String> {
+        let store = load_store();
+        store.get(broker).cloned()
+            .ok_or_else(|| format!("No credentials for broker: {}", broker))
+    }
+
+    pub fn delete_credentials(broker: &str) -> Result<(), String> {
+        let mut store = load_store();
+        store.remove(broker);
+        save_store(&store)
+    }
+
+    pub fn list_configured() -> Vec<String> {
+        let store = load_store();
+        store.keys().cloned().collect()
+    }
+}
+
+// ── Public API (keyring with fallback) ────────────────────────────────
+
+/// Save credentials for a broker. Tries OS keychain first, falls back to encrypted file.
+pub fn save_credentials(broker: &str, fields: &HashMap<String, String>) -> Result<(), String> {
+    let json = serde_json::to_string(fields).map_err(|e| e.to_string())?;
+
+    // Try OS keychain first
+    match keyring_set(&format!("broker:{}", broker), &json) {
+        Ok(()) => {
+            log::info!("Saved credentials for '{}' in OS keychain", broker);
+            // Also update the broker index in keychain
+            let _ = update_broker_index(broker, true);
+            Ok(())
+        }
+        Err(e) => {
+            log::warn!(
+                "OS keychain unavailable for '{}': {}. Using encrypted file fallback.",
+                broker, e
+            );
+            encrypted_fallback::save_credentials(broker, fields)
+        }
+    }
+}
+
+/// Load credentials for a broker. Tries OS keychain first, falls back to encrypted file.
+pub fn load_credentials(broker: &str) -> Result<HashMap<String, String>, String> {
+    // Try OS keychain first
+    match keyring_get(&format!("broker:{}", broker)) {
+        Ok(json) => {
+            serde_json::from_str(&json)
+                .map_err(|e| format!("Corrupt keychain data for '{}': {}", broker, e))
+        }
+        Err(_) => {
+            // Fallback to encrypted file
+            encrypted_fallback::load_credentials(broker)
+        }
+    }
+}
+
+/// Delete credentials for a broker. Removes from both keychain and fallback.
+pub fn delete_credentials(broker: &str) -> Result<(), String> {
+    // Delete from keychain (ignore errors — might not exist there)
+    let _ = keyring_delete(&format!("broker:{}", broker));
+    let _ = update_broker_index(broker, false);
+
+    // Also delete from fallback file if it exists
+    let _ = encrypted_fallback::delete_credentials(broker);
+
+    Ok(())
+}
+
+/// List all configured brokers (those with stored credentials).
+pub fn list_configured_brokers() -> Vec<String> {
+    // Try keychain broker index first
+    if let Ok(json) = keyring_get("broker:_index") {
+        if let Ok(list) = serde_json::from_str::<Vec<String>>(&json) {
+            if !list.is_empty() {
+                return list;
+            }
+        }
+    }
+
+    // Fallback to encrypted file
+    encrypted_fallback::list_configured()
+}
+
+/// Maintain a broker index in the keychain so we can enumerate without filesystem.
+fn update_broker_index(broker: &str, add: bool) -> Result<(), String> {
+    let mut list: Vec<String> = keyring_get("broker:_index")
+        .ok()
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default();
+
+    if add {
+        if !list.contains(&broker.to_string()) {
+            list.push(broker.to_string());
+        }
+    } else {
+        list.retain(|b| b != broker);
+    }
+
+    let json = serde_json::to_string(&list).map_err(|e| e.to_string())?;
+    keyring_set("broker:_index", &json)
+}
+
+/// Migrate any existing plaintext credentials.json to secure storage.
+/// Call this once at startup. After migration, the plaintext file is deleted.
+pub fn migrate_plaintext_if_exists() {
     let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
     path.push("com.auraalpha.desktop");
     path.push("credentials.json");
-    path
-}
 
-/// Save credentials for a broker (encrypted at rest via OS keychain)
-/// In production, this uses tauri-plugin-store which encrypts via OS keychain.
-/// This file-based fallback is for the credential structure only.
-pub fn save_credentials(broker: &str, fields: &HashMap<String, String>) -> Result<(), String> {
-    let path = store_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create store dir: {}", e))?;
-    }
-
-    // Load existing
-    let mut store: HashMap<String, HashMap<String, String>> = if path.exists() {
-        let content =
-            std::fs::read_to_string(&path).map_err(|e| format!("Cannot read store: {}", e))?;
-        serde_json::from_str(&content).unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
-
-    store.insert(broker.to_string(), fields.clone());
-
-    let content = serde_json::to_string_pretty(&store).map_err(|e| e.to_string())?;
-    std::fs::write(&path, content).map_err(|e| format!("Cannot write store: {}", e))?;
-
-    Ok(())
-}
-
-/// Load credentials for a broker
-pub fn load_credentials(broker: &str) -> Result<HashMap<String, String>, String> {
-    let path = store_path();
     if !path.exists() {
-        return Err(format!("No credentials stored for {}", broker));
+        return;
     }
 
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("Cannot read store: {}", e))?;
-    let store: HashMap<String, HashMap<String, String>> =
-        serde_json::from_str(&content).map_err(|e| format!("Parse error: {}", e))?;
-
-    store
-        .get(broker)
-        .cloned()
-        .ok_or_else(|| format!("No credentials for broker: {}", broker))
-}
-
-/// Delete credentials for a broker
-pub fn delete_credentials(broker: &str) -> Result<(), String> {
-    let path = store_path();
-    if !path.exists() {
-        return Ok(());
-    }
-
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("Cannot read store: {}", e))?;
-    let mut store: HashMap<String, HashMap<String, String>> =
-        serde_json::from_str(&content).unwrap_or_default();
-
-    store.remove(broker);
-
-    let content = serde_json::to_string_pretty(&store).map_err(|e| e.to_string())?;
-    std::fs::write(&path, content).map_err(|e| format!("Cannot write store: {}", e))?;
-
-    Ok(())
-}
-
-/// List all configured brokers (those with stored credentials)
-pub fn list_configured_brokers() -> Vec<String> {
-    let path = store_path();
-    if !path.exists() {
-        return Vec::new();
-    }
+    log::warn!("Found plaintext credentials.json — migrating to secure storage");
 
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            log::error!("Cannot read plaintext credentials for migration: {}", e);
+            return;
+        }
     };
 
-    let store: HashMap<String, HashMap<String, String>> =
-        serde_json::from_str(&content).unwrap_or_default();
+    let store: HashMap<String, HashMap<String, String>> = match serde_json::from_str(&content) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("Cannot parse plaintext credentials for migration: {}", e);
+            return;
+        }
+    };
 
-    store.keys().cloned().collect()
+    let mut migrated = 0;
+    for (broker, fields) in &store {
+        if save_credentials(broker, fields).is_ok() {
+            migrated += 1;
+        }
+    }
+
+    log::info!("Migrated {} broker credential sets to secure storage", migrated);
+
+    // Delete the plaintext file
+    if let Err(e) = std::fs::remove_file(&path) {
+        log::error!("Cannot delete plaintext credentials.json: {}", e);
+    } else {
+        log::info!("Deleted plaintext credentials.json");
+    }
 }

@@ -4,6 +4,7 @@ import { PreferencesProvider } from './contexts/PreferencesContext';
 import { ConfigProvider } from './contexts/ConfigContext';
 import LoginPage from './pages/LoginPage';
 import StartupPage from './pages/StartupPage';
+import ExplorerPage from './pages/ExplorerPage';
 import WorkspaceShell from './shell/WorkspaceShell';
 import ForceUpdateModal from './components/ForceUpdateModal';
 import UpdateAvailableBanner from './components/UpdateAvailableBanner';
@@ -108,7 +109,7 @@ function AuthGate() {
 }
 
 function AppWithStartup() {
-  // 'startup' = show startup screen, 'app' = show normal auth flow
+  // 'startup' = show startup screen, 'explorer' = demo backtest, 'app' = normal auth flow
   const [phase, setPhase] = useState('startup');
 
   // Version enforcement state
@@ -181,13 +182,18 @@ function AppWithStartup() {
   }, [runVersionCheck]);
 
   const handleNeedsLogin = useCallback(() => {
-    // No saved auth — show login via the normal AuthGate flow
-    setPhase('app');
+    // No saved auth — show explorer mode first (first-run experience)
+    // User sees instant demo backtest results before being asked to sign in
+    setPhase('explorer');
     runVersionCheck();
   }, [runVersionCheck]);
 
   if (phase === 'startup') {
     return <StartupPage onReady={handleReady} onNeedsLogin={handleNeedsLogin} />;
+  }
+
+  if (phase === 'explorer') {
+    return <ExplorerPage onSignIn={() => setPhase('app')} />;
   }
 
   // Block the entire app if the running version is below the enforced minimum

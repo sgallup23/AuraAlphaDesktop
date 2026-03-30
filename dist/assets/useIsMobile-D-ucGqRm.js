@@ -1,2 +1,0 @@
-import{a as r}from"./vendor-C5RdOJEA.js";function c(){var e,t;try{return((t=(e=window.Capacitor)==null?void 0:e.isNativePlatform)==null?void 0:t.call(e))||!1}catch{return!1}}const a=c(),o=1024;function f(){const[e,t]=r.useState(()=>a||typeof window<"u"&&window.innerWidth<=o);return r.useEffect(()=>{if(a)return;const n=window.matchMedia(`(max-width: ${o}px)`),i=s=>t(s.matches);return n.addEventListener("change",i),()=>n.removeEventListener("change",i)},[]),e}export{f as u};
-//# sourceMappingURL=useIsMobile-D-ucGqRm.js.map

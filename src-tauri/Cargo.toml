@@ -1,6 +1,6 @@
 [package]
 name = "aura-alpha-desktop"
-version = "5.0.3"
+version = "5.5.0"
 description = "Aura Alpha Trading Desk"
 authors = ["Aura Alpha"]
 edition = "2021"
@@ -30,6 +30,11 @@ log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.32"
 hostname = "0.4"
+keyring = "3"
+sha2 = "0.10"
+rand = "0.8"
+rayon = "1.10"
+polars = { version = "0.46", features = ["parquet", "csv", "lazy", "dtype-date", "dtype-datetime"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

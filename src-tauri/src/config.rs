@@ -17,6 +17,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+// ─── Canonical URLs (0W: single source of truth) ────────────────────────────
+
+/// Default cloud base URL — used by api_proxy, startup, and anywhere that
+/// needs the production endpoint.
+pub const DEFAULT_CLOUD_URL: &str = "https://auraalpha.cc";
+
+/// Default local API base URL — used by api_proxy and startup for local-first
+/// sidecar communication.
+pub const DEFAULT_LOCAL_API: &str = "http://127.0.0.1:8020";
+
 // ─── Single hardcoded URL ────────────────────────────────────────────────────
 
 /// The only hardcoded URL in the entire application.

@@ -1,8 +1,11 @@
 pub mod api_proxy;
 pub mod auth;
+pub mod compute;
 pub mod config;
+pub mod crash_reporter;
 pub mod local_bots;
 pub mod preferences;
+pub mod safe_io;
 pub mod startup;
 pub mod updater;
 pub mod worker;
@@ -15,7 +18,7 @@ use std::process::Child;
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent, WindowEvent};
 
-use startup::TELEMETRY_URL;
+use startup::telemetry_url;
 
 // ── Managed state ─────────────────────────────────────────────────────
 
@@ -57,7 +60,7 @@ async fn check_health() -> Result<startup::HealthSummary, String> {
 async fn get_bot_status() -> Result<Vec<BotStatus>, String> {
     let client = reqwest::Client::new();
     match client
-        .get(TELEMETRY_URL)
+        .get(&telemetry_url())
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
@@ -240,8 +243,52 @@ pub fn run() {
             worker::start_grid_worker,
             worker::stop_grid_worker,
             worker::grid_worker_status,
+            // Local computation (pure Rust, zero dependencies)
+            compute::demo::run_demo_backtest,
+            compute::backtest::run_local_backtest,
+            compute::scanner::run_local_scan,
+            compute::ml::run_local_ml_inference,
+            compute::features::run_local_feature_extraction,
         ])
         .setup(|app| {
+            // ── 0E: Crash reporting — install panic hook early ────
+            crash_reporter::install_panic_hook();
+
+            // ── 0A: Migrate plaintext credentials to secure storage
+            credential_store::migrate_plaintext_if_exists();
+            auth::migrate_plaintext_auth_if_exists();
+
+            // ── 0H: Single instance lock ──────────────────────────
+            {
+                let lock_dir = dirs::data_dir()
+                    .unwrap_or_default()
+                    .join("AuraAlpha");
+                if let Err(e) = std::fs::create_dir_all(&lock_dir) {
+                    log::warn!("Could not create lock dir: {}", e);
+                }
+                let lock_path = lock_dir.join(".app.lock");
+                if lock_path.exists() {
+                    // Check if the process recorded in the lock file is still running
+                    if let Ok(contents) = std::fs::read_to_string(&lock_path) {
+                        if let Ok(pid) = contents.trim().parse::<u32>() {
+                            let sys = sysinfo::System::new_all();
+                            let pid_val = sysinfo::Pid::from_u32(pid);
+                            if sys.process(pid_val).is_some() {
+                                log::error!(
+                                    "Another instance is already running (PID {}). Exiting.",
+                                    pid
+                                );
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                }
+                // Write our PID to the lock file
+                if let Err(e) = std::fs::write(&lock_path, format!("{}", std::process::id())) {
+                    log::warn!("Could not write app lock file: {}", e);
+                }
+            }
+
             // ── System tray + auto-start workers ──────────────────
             tray::setup_tray(app)?;
 
@@ -300,7 +347,9 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                     if let Some(window) = app_handle.get_webview_window("main") {
-                        let url: tauri::Url = "https://auraalpha.cc".parse().unwrap();
+                        let url: tauri::Url = "https://auraalpha.cc"
+                            .parse()
+                            .expect("hardcoded URL");
                         let _ = window.navigate(url);
                         log::info!("Navigated WebView to auraalpha.cc");
                     }

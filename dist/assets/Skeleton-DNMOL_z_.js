@@ -1,7 +1,0 @@
-import{j as e}from"./vendor-C5RdOJEA.js";import{t as r}from"./index-CQ9IhrRi.js";function g({width:t="100%",height:s=16,circle:n=!1,lines:i=0,className:o,style:a}){const d={background:`linear-gradient(90deg, ${r.color.surfaceHover} 25%, ${r.color.surfaceActive} 50%, ${r.color.surfaceHover} 75%)`,backgroundSize:"200% 100%",animation:"skeletonPulse 1.5s ease-in-out infinite",borderRadius:n?r.radius.full:r.radius.sm};if(i>0)return e.jsxs(e.Fragment,{children:[e.jsx("style",{children:c}),e.jsx("div",{style:{display:"flex",flexDirection:"column",gap:8,...a},className:o,children:Array.from({length:i},(m,l)=>e.jsx("div",{style:{...d,width:l===i-1?"60%":"100%",height:s}},l))})]});const u={...d,width:n?s:t,height:s,...a};return e.jsxs(e.Fragment,{children:[e.jsx("style",{children:c}),e.jsx("div",{style:u,className:o})]})}const c=`
-@keyframes skeletonPulse {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-`;function p({count:t=1,style:s}){return e.jsx("div",{style:{display:"grid",gridTemplateColumns:`repeat(${Math.min(t,4)}, 1fr)`,gap:r.spacing.md,...s},children:Array.from({length:t},(n,i)=>e.jsxs("div",{style:{background:r.glass.bg,borderRadius:r.radius.lg,padding:r.spacing.lg,border:`1px solid ${r.glass.border}`},children:[e.jsx(g,{width:"50%",height:10,style:{marginBottom:8}}),e.jsx(g,{width:"80%",height:20})]},i))})}export{g as S,p as a};
-//# sourceMappingURL=Skeleton-DNMOL_z_.js.map

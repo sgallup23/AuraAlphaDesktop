@@ -8,10 +8,20 @@ use tauri::Manager;
 
 use crate::credential_store;
 
+use crate::config;
+
 // Local-first: try local sidecar, cloud is backup only
-pub(crate) const HEALTH_URL: &str = "http://127.0.0.1:8020/api/system/health";
-pub(crate) const TELEMETRY_URL: &str = "http://127.0.0.1:8020/api/telemetry/latest";
-pub(crate) const REMOTE_API_URL: &str = "http://127.0.0.1:8020/api/remote";
+// 0W: Derived from config::DEFAULT_LOCAL_API — single source of truth.
+// Rust const doesn't allow format!(), so we use functions.
+pub(crate) fn health_url() -> String {
+    format!("{}/api/system/health", config::DEFAULT_LOCAL_API)
+}
+pub(crate) fn telemetry_url() -> String {
+    format!("{}/api/telemetry/latest", config::DEFAULT_LOCAL_API)
+}
+pub(crate) fn remote_api_url() -> String {
+    format!("{}/api/remote", config::DEFAULT_LOCAL_API)
+}
 
 // ── Shared types (also used by tray.rs) ──────────────────────────────
 
@@ -28,7 +38,7 @@ pub struct HealthSummary {
 pub async fn fetch_health_summary() -> Result<HealthSummary, String> {
     let client = reqwest::Client::new();
     match client
-        .get(HEALTH_URL)
+        .get(&health_url())
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
@@ -84,7 +94,9 @@ pub async fn fetch_health_summary() -> Result<HealthSummary, String> {
 /// Used by tray menu and the `send_notification` IPC command.
 pub async fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
-    let _ = app.notification().builder().title(title).body(body).show();
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        log::warn!("Failed to show notification '{}': {}", title, e);
+    }
 }
 
 // ── Project / worker helpers ──────────────────────────────────────────
@@ -146,7 +158,9 @@ pub fn spawn_worker(project_dir: &std::path::Path) -> Result<Child, String> {
 
     let python = find_python(project_dir);
     let log_dir = project_dir.join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        log::warn!("Failed to create log dir {}: {}", log_dir.display(), e);
+    }
     let log_file = std::fs::File::create(log_dir.join("remote_worker.log"))
         .map_err(|e| format!("Cannot create log file: {}", e))?;
     let log_err = log_file
@@ -156,7 +170,7 @@ pub fn spawn_worker(project_dir: &std::path::Path) -> Result<Child, String> {
     let mut cmd = Command::new(&python);
     cmd.arg(worker_script.to_string_lossy().as_ref())
         .current_dir(project_dir)
-        .env("REMOTE_API_URL", REMOTE_API_URL)
+        .env("REMOTE_API_URL", &remote_api_url())
         .env("REMOTE_WORKER_TOKEN", &token)
         .env("WORKER_ID", "desktop")
         .env("POLL_INTERVAL", "30")
@@ -433,10 +447,12 @@ pub fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result
 
     #[cfg(unix)]
     if !use_python {
-        let _ = std::fs::set_permissions(
+        if let Err(e) = std::fs::set_permissions(
             &binary,
             <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
-        );
+        ) {
+            log::warn!("Failed to set permissions on {}: {}", binary.display(), e);
+        }
     }
 
     let data_dir = dirs::data_local_dir()
@@ -448,8 +464,12 @@ pub fn spawn_research_worker(coordinator_url: &str, max_parallel: u32) -> Result
         })
         .join("cc.auraalpha.desktop");
     let log_dir = data_dir.join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let _ = std::fs::create_dir_all(&data_dir);
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        log::warn!("Failed to create log dir {}: {}", log_dir.display(), e);
+    }
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        log::warn!("Failed to create data dir {}: {}", data_dir.display(), e);
+    }
 
     let log_file = std::fs::File::create(log_dir.join("research_worker.log"))
         .map_err(|e| format!("Cannot create log file: {}", e))?;
@@ -502,7 +522,7 @@ pub async fn startup_check(app: tauri::AppHandle) -> Result<serde_json::Value, S
     // 1. Check API health
     let client = reqwest::Client::new();
     if let Ok(resp) = client
-        .get(HEALTH_URL)
+        .get(&health_url())
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
@@ -517,12 +537,18 @@ pub async fn startup_check(app: tauri::AppHandle) -> Result<serde_json::Value, S
         .join(".running.lock");
     if lock_path.exists() {
         status["previous_crash"] = serde_json::Value::Bool(true);
-        let _ = std::fs::remove_file(&lock_path);
+        if let Err(e) = std::fs::remove_file(&lock_path) {
+            log::warn!("Failed to remove crash lock file {}: {}", lock_path.display(), e);
+        }
     }
     if let Some(lock_dir) = lock_path.parent() {
-        let _ = std::fs::create_dir_all(lock_dir);
+        if let Err(e) = std::fs::create_dir_all(lock_dir) {
+            log::warn!("Failed to create lock dir {}: {}", lock_dir.display(), e);
+        }
     }
-    let _ = std::fs::write(&lock_path, format!("{}", std::process::id()));
+    if let Err(e) = std::fs::write(&lock_path, format!("{}", std::process::id())) {
+        log::warn!("Failed to write lock file {}: {}", lock_path.display(), e);
+    }
 
     // 3. Check for saved auth tokens
     {
@@ -557,7 +583,9 @@ pub async fn clean_shutdown() -> Result<(), String> {
         .unwrap_or_default()
         .join("AuraAlpha")
         .join(".running.lock");
-    let _ = std::fs::remove_file(&lock_path);
+    if let Err(e) = std::fs::remove_file(&lock_path) {
+        log::warn!("Failed to remove shutdown lock file {}: {}", lock_path.display(), e);
+    }
     Ok(())
 }
 
@@ -637,8 +665,12 @@ pub async fn tray_stop_research_worker(
 ) -> Result<(), String> {
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     if let Some(ref mut child) = *guard {
-        let _ = child.kill();
-        let _ = child.wait();
+        if let Err(e) = child.kill() {
+            log::warn!("Failed to kill research worker: {}", e);
+        }
+        if let Err(e) = child.wait() {
+            log::warn!("Failed to wait on research worker: {}", e);
+        }
     }
     *guard = None;
     log::info!("Research worker stopped (via tray)");
@@ -657,7 +689,7 @@ pub async fn tray_start_research_worker(
                 return Ok(ResearchWorkerStatusInfo {
                     running: true,
                     pid: Some(child.id()),
-                    coordinator_url: Some("https://auraalpha.cc".to_string()),
+                    coordinator_url: Some(config::DEFAULT_CLOUD_URL.to_string()),
                 });
             }
             _ => {
@@ -666,7 +698,7 @@ pub async fn tray_start_research_worker(
         }
     }
 
-    let url = "https://auraalpha.cc";
+    let url = config::DEFAULT_CLOUD_URL;
     let child = spawn_research_worker(url, 2)?;
     let pid = child.id();
     *guard = Some(child);
@@ -722,8 +754,12 @@ pub async fn stop_worker(
 ) -> Result<WorkerStatusInfo, String> {
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     if let Some(ref mut child) = *guard {
-        let _ = child.kill();
-        let _ = child.wait();
+        if let Err(e) = child.kill() {
+            log::warn!("Failed to kill remote worker: {}", e);
+        }
+        if let Err(e) = child.wait() {
+            log::warn!("Failed to wait on remote worker: {}", e);
+        }
     }
     *guard = None;
 
@@ -793,7 +829,7 @@ pub async fn start_research_worker(
         }
     }
 
-    let url = coordinator_url.unwrap_or_else(|| "https://auraalpha.cc".to_string());
+    let url = coordinator_url.unwrap_or_else(|| config::DEFAULT_CLOUD_URL.to_string());
     let par = max_parallel.unwrap_or(2);
     let child = spawn_research_worker(&url, par)?;
     let pid = child.id();
@@ -814,8 +850,12 @@ pub async fn stop_research_worker(
 ) -> Result<ResearchWorkerStatusInfo, String> {
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     if let Some(ref mut child) = *guard {
-        let _ = child.kill();
-        let _ = child.wait();
+        if let Err(e) = child.kill() {
+            log::warn!("Failed to kill research worker sidecar: {}", e);
+        }
+        if let Err(e) = child.wait() {
+            log::warn!("Failed to wait on research worker sidecar: {}", e);
+        }
     }
     *guard = None;
 
@@ -879,9 +919,20 @@ pub async fn try_start_local_api(app_handle: tauri::AppHandle, local_api_state: 
         .stderr(std::process::Stdio::null())
         .spawn()
     {
-        Ok(child) => {
+        Ok(mut child) => {
             log::info!("Local API started (PID {})", child.id());
-            *local_api_state.child.lock().unwrap() = Some(child);
+            // 0AB: Handle mutex poison — kill child if we can't store it
+            match local_api_state.child.lock() {
+                Ok(mut guard) => {
+                    *guard = Some(child);
+                }
+                Err(e) => {
+                    log::error!("Mutex poisoned storing local API child, killing process: {}", e);
+                    if let Err(ke) = child.kill() {
+                        log::warn!("Failed to kill orphaned local API process: {}", ke);
+                    }
+                }
+            }
         }
         Err(e) => {
             match Command::new("python")
@@ -891,9 +942,20 @@ pub async fn try_start_local_api(app_handle: tauri::AppHandle, local_api_state: 
                 .stderr(std::process::Stdio::null())
                 .spawn()
             {
-                Ok(child) => {
+                Ok(mut child) => {
                     log::info!("Local API started via python (PID {})", child.id());
-                    *local_api_state.child.lock().unwrap() = Some(child);
+                    // 0AB: Handle mutex poison — kill child if we can't store it
+                    match local_api_state.child.lock() {
+                        Ok(mut guard) => {
+                            *guard = Some(child);
+                        }
+                        Err(e) => {
+                            log::error!("Mutex poisoned storing local API child, killing process: {}", e);
+                            if let Err(ke) = child.kill() {
+                                log::warn!("Failed to kill orphaned local API process: {}", ke);
+                            }
+                        }
+                    }
                 }
                 Err(_) => {
                     log::warn!("Local API failed to start: {}. Cloud mode only.", e);
