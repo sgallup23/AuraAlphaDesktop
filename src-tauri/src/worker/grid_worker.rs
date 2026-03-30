@@ -128,8 +128,14 @@ async fn register(
     token: &str,
     worker_id: &str,
 ) -> Result<String, String> {
+    let machine_hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
     let body = serde_json::json!({
         "worker_id": worker_id,
+        "hostname": machine_hostname,
+        "os": format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "version": env!("CARGO_PKG_VERSION"),
@@ -172,8 +178,13 @@ async fn heartbeat(
     jobs_completed: u64,
     jobs_failed: u64,
 ) -> Result<(), String> {
+    let machine_hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
     let body = serde_json::json!({
         "worker_id": worker_id,
+        "hostname": machine_hostname,
         "jobs_completed": jobs_completed,
         "jobs_failed": jobs_failed,
         "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -202,10 +213,18 @@ async fn dequeue_job(
     token: &str,
     worker_id: &str,
 ) -> Result<Option<serde_json::Value>, String> {
+    // Server expects DequeueRequest body: {worker_id, count, job_types}
+    let body = serde_json::json!({
+        "worker_id": worker_id,
+        "count": 1,
+        "job_types": [],
+    });
+
     let resp = client
         .post(format!("{coordinator_url}/api/cluster/contributor/dequeue"))
         .header("X-Worker-Token", token)
         .header("X-Worker-Id", worker_id)
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("dequeue failed: {e}"))?;
@@ -219,12 +238,20 @@ async fn dequeue_job(
         return Err(format!("dequeue returned status {}", resp.status()));
     }
 
-    let job: serde_json::Value = resp
+    let data: serde_json::Value = resp
         .json()
         .await
         .map_err(|e| format!("dequeue parse error: {e}"))?;
 
-    Ok(Some(job))
+    // Server returns {"jobs": [...]}, extract the first job if present
+    if let Some(jobs) = data["jobs"].as_array() {
+        if let Some(first) = jobs.first() {
+            return Ok(Some(first.clone()));
+        }
+    }
+
+    // Empty jobs array or unexpected shape — no work available
+    Ok(None)
 }
 
 /// Report job completion to the coordinator.
@@ -236,12 +263,12 @@ async fn complete_job(
     job_id: &str,
     result: &serde_json::Value,
 ) -> Result<(), String> {
+    // Server expects CompleteRequest: {job_id, metrics, result, compute_seconds}
     let body = serde_json::json!({
         "job_id": job_id,
-        "worker_id": worker_id,
-        "status": "completed",
         "result": result,
-        "completed_at": chrono::Utc::now().to_rfc3339(),
+        "metrics": result,
+        "compute_seconds": 0,
     });
 
     let resp = client
@@ -272,16 +299,14 @@ async fn fail_job(
     job_id: &str,
     error_msg: &str,
 ) -> Result<(), String> {
+    // Server expects FailRequest: {job_id, error} at the /fail endpoint
     let body = serde_json::json!({
         "job_id": job_id,
-        "worker_id": worker_id,
-        "status": "failed",
         "error": error_msg,
-        "failed_at": chrono::Utc::now().to_rfc3339(),
     });
 
     let resp = client
-        .post(format!("{coordinator_url}/api/cluster/contributor/complete"))
+        .post(format!("{coordinator_url}/api/cluster/contributor/fail"))
         .header("X-Worker-Token", token)
         .header("X-Worker-Id", worker_id)
         .json(&body)

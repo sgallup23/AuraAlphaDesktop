@@ -269,6 +269,16 @@ pub fn run() {
                         let config = app_handle.state::<config::AppConfigState>();
                         let coordinator = config.0.read().map(|c| c.coordinator_url.clone()).unwrap_or_default();
                         if !coordinator.is_empty() {
+                            // Initialize status BEFORE spawning (mirrors start_grid_worker IPC)
+                            {
+                                let mut s = state.status.write().await;
+                                s.running = true;
+                                s.coordinator_url = Some(coordinator.clone());
+                                s.worker_id = None;
+                                s.jobs_completed = 0;
+                                s.jobs_failed = 0;
+                                s.uptime_secs = 0;
+                            }
                             let status = state.status.clone();
                             let shutdown = state.shutdown.clone();
                             let jh = tokio::spawn(worker::grid_worker::run_worker(
