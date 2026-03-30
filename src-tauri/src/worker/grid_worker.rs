@@ -1,14 +1,21 @@
-//! Core grid worker loop — token resolution, registration, heartbeat, job processing.
+//! Core grid worker loop — token resolution, registration, heartbeat, parallel job processing.
 //!
 //! This module contains the long-running async function `run_worker` that is
 //! spawned by the `start_grid_worker` IPC command in `mod.rs`.
+//!
+//! Parallel execution:
+//! - Dequeues multiple jobs per cycle (up to `max_parallel` or available_cores/2)
+//! - Uses `tokio::spawn` to execute jobs concurrently
+//! - Reports results as each job completes (no waiting for entire batch)
+//! - Tracks in-flight job count to avoid overloading the machine
 
 use super::job_executor;
 use super::WorkerStatus;
 use log::{error, info, warn};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Notify, RwLock, Semaphore};
 
 // ─── Token resolution ───────────────────────────────────────────────────────
 
@@ -127,6 +134,7 @@ async fn register(
     coordinator_url: &str,
     token: &str,
     worker_id: &str,
+    max_parallel: u32,
 ) -> Result<String, String> {
     let machine_hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
@@ -151,6 +159,8 @@ async fn register(
         "version": env!("CARGO_PKG_VERSION"),
         "cpu_cores": cpu_cores,
         "memory_gb": memory_gb,
+        "max_parallel": max_parallel,
+        "supported_job_types": ["backtest", "research_backtest", "scan", "ml_inference", "feature_extraction"],
     });
 
     let resp = client
@@ -177,7 +187,7 @@ async fn register(
         .unwrap_or(worker_id)
         .to_string();
 
-    info!("grid_worker: registered as {assigned_id}");
+    info!("grid_worker: registered as {assigned_id} (max_parallel={max_parallel})");
     Ok(assigned_id)
 }
 
@@ -189,6 +199,7 @@ async fn heartbeat(
     worker_id: &str,
     jobs_completed: u64,
     jobs_failed: u64,
+    in_flight: u64,
 ) -> Result<(), String> {
     let machine_hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
@@ -199,6 +210,7 @@ async fn heartbeat(
         "hostname": machine_hostname,
         "jobs_completed": jobs_completed,
         "jobs_failed": jobs_failed,
+        "jobs_in_flight": in_flight,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
 
@@ -218,17 +230,18 @@ async fn heartbeat(
     Ok(())
 }
 
-/// Dequeue a job from the coordinator. Returns `None` if no jobs available.
-async fn dequeue_job(
+/// Dequeue multiple jobs from the coordinator. Returns empty vec if no jobs available.
+async fn dequeue_jobs(
     client: &reqwest::Client,
     coordinator_url: &str,
     token: &str,
     worker_id: &str,
-) -> Result<Option<serde_json::Value>, String> {
-    // Server expects DequeueRequest body: {worker_id, count, job_types}
+    count: u32,
+) -> Result<Vec<serde_json::Value>, String> {
     let body = serde_json::json!({
         "worker_id": worker_id,
-        "count": 1,
+        "count": count,
+        "max_jobs": count,
         "job_types": [],
     });
 
@@ -242,8 +255,7 @@ async fn dequeue_job(
         .map_err(|e| format!("dequeue failed: {e}"))?;
 
     if resp.status().as_u16() == 204 {
-        // No jobs available
-        return Ok(None);
+        return Ok(vec![]);
     }
 
     if !resp.status().is_success() {
@@ -255,15 +267,11 @@ async fn dequeue_job(
         .await
         .map_err(|e| format!("dequeue parse error: {e}"))?;
 
-    // Server returns {"jobs": [...]}, extract the first job if present
     if let Some(jobs) = data["jobs"].as_array() {
-        if let Some(first) = jobs.first() {
-            return Ok(Some(first.clone()));
-        }
+        Ok(jobs.clone())
+    } else {
+        Ok(vec![])
     }
-
-    // Empty jobs array or unexpected shape — no work available
-    Ok(None)
 }
 
 /// Report job completion to the coordinator.
@@ -274,13 +282,14 @@ async fn complete_job(
     worker_id: &str,
     job_id: &str,
     result: &serde_json::Value,
+    compute_seconds: f64,
 ) -> Result<(), String> {
-    // Server expects CompleteRequest: {job_id, metrics, result, compute_seconds}
     let body = serde_json::json!({
         "job_id": job_id,
         "result": result,
-        "metrics": result,
-        "compute_seconds": 0,
+        "metrics": result.get("metrics").unwrap_or(result),
+        "compute_seconds": compute_seconds,
+        "status": "completed",
     });
 
     let resp = client
@@ -311,10 +320,10 @@ async fn fail_job(
     job_id: &str,
     error_msg: &str,
 ) -> Result<(), String> {
-    // Server expects FailRequest: {job_id, error} at the /fail endpoint
     let body = serde_json::json!({
         "job_id": job_id,
         "error": error_msg,
+        "status": "failed",
     });
 
     let resp = client
@@ -336,22 +345,40 @@ async fn fail_job(
     Ok(())
 }
 
+// ─── Parallel execution helpers ──────────────────────────────────────────────
+
+/// Determine how many jobs to dequeue based on available CPU cores and config.
+fn compute_max_parallel() -> u32 {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(2);
+    // Use half the cores (each Python subprocess uses ~1 core), capped at 8
+    let parallel = (cores / 2).max(1).min(8);
+    info!(
+        "grid_worker: detected {cores} cores, max_parallel={parallel}"
+    );
+    parallel
+}
+
 // ─── Main worker loop ───────────────────────────────────────────────────────
 
 /// Entry point for the grid worker, spawned as a Tokio task.
 ///
 /// Lifecycle:
 /// 1. Resolve token (env -> file -> auto-provision)
-/// 2. Register with coordinator
+/// 2. Register with coordinator (includes max_parallel capability)
 /// 3. Spawn heartbeat task (30s interval)
-/// 4. Loop: dequeue job -> execute -> report result
+/// 4. Loop: dequeue batch -> spawn parallel executors -> report results
 /// 5. On `Notify` signal or unrecoverable error, exit cleanly
 pub async fn run_worker(
     coordinator_url: String,
     status: Arc<RwLock<WorkerStatus>>,
     shutdown: Arc<Notify>,
 ) {
-    info!("grid_worker: starting (coordinator={coordinator_url})");
+    let max_parallel = compute_max_parallel();
+    info!(
+        "grid_worker: starting (coordinator={coordinator_url}, max_parallel={max_parallel})"
+    );
     let start_time = Instant::now();
 
     // Resolve token
@@ -377,7 +404,15 @@ pub async fn run_worker(
 
     // Register
     let initial_id = provisioned_id.unwrap_or_else(|| "desktop-worker".to_string());
-    let worker_id = match register(&client, &coordinator_url, &token, &initial_id).await {
+    let worker_id = match register(
+        &client,
+        &coordinator_url,
+        &token,
+        &initial_id,
+        max_parallel,
+    )
+    .await
+    {
         Ok(id) => id,
         Err(e) => {
             warn!("grid_worker: registration failed ({e}), using local ID");
@@ -391,6 +426,14 @@ pub async fn run_worker(
         s.worker_id = Some(worker_id.clone());
     }
 
+    // Shared counters for parallel job tracking
+    let jobs_completed = Arc::new(AtomicU64::new(0));
+    let jobs_failed = Arc::new(AtomicU64::new(0));
+    let in_flight = Arc::new(AtomicU64::new(0));
+
+    // Semaphore to limit concurrent job execution
+    let semaphore = Arc::new(Semaphore::new(max_parallel as usize));
+
     // Spawn heartbeat loop
     let hb_client = client.clone();
     let hb_url = coordinator_url.clone();
@@ -398,22 +441,34 @@ pub async fn run_worker(
     let hb_worker_id = worker_id.clone();
     let hb_status = Arc::clone(&status);
     let hb_shutdown = Arc::clone(&shutdown);
+    let hb_completed = Arc::clone(&jobs_completed);
+    let hb_failed = Arc::clone(&jobs_failed);
+    let hb_in_flight = Arc::clone(&in_flight);
 
     let _heartbeat_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    let s = hb_status.read().await;
+                    let completed = hb_completed.load(Ordering::Relaxed);
+                    let failed = hb_failed.load(Ordering::Relaxed);
+                    let flying = hb_in_flight.load(Ordering::Relaxed);
+
                     let _ = heartbeat(
                         &hb_client,
                         &hb_url,
                         &hb_token,
                         &hb_worker_id,
-                        s.jobs_completed,
-                        s.jobs_failed,
+                        completed,
+                        failed,
+                        flying,
                     )
                     .await;
+
+                    // Update status for IPC queries
+                    let mut s = hb_status.write().await;
+                    s.jobs_completed = completed;
+                    s.jobs_failed = failed;
                 }
                 _ = hb_shutdown.notified() => {
                     info!("grid_worker: heartbeat loop shutting down");
@@ -442,51 +497,112 @@ pub async fn run_worker(
         {
             let mut s = status.write().await;
             s.uptime_secs = start_time.elapsed().as_secs();
+            s.jobs_completed = jobs_completed.load(Ordering::Relaxed);
+            s.jobs_failed = jobs_failed.load(Ordering::Relaxed);
         }
 
-        // Dequeue
-        match dequeue_job(&client, &coordinator_url, &token, &worker_id).await {
-            Ok(Some(job)) => {
+        // Calculate how many jobs we can take: available semaphore permits
+        let current_in_flight = in_flight.load(Ordering::Relaxed) as u32;
+        let available_slots = max_parallel.saturating_sub(current_in_flight);
+
+        if available_slots == 0 {
+            // All slots busy — wait a bit before checking again
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                _ = shutdown.notified() => {
+                    info!("grid_worker: shutdown while waiting for slots");
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // Dequeue a batch of jobs
+        let batch_size = available_slots.min(8); // Never request more than 8 at once
+        match dequeue_jobs(&client, &coordinator_url, &token, &worker_id, batch_size).await {
+            Ok(jobs) if !jobs.is_empty() => {
                 idle_backoff_secs = 2; // Reset backoff on successful dequeue
+                let job_count = jobs.len();
 
-                let job_id = job["job_id"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .to_string();
-                info!("grid_worker: executing job {job_id}");
+                info!(
+                    "grid_worker: dequeued {job_count} jobs (in_flight={current_in_flight}, \
+                     max_parallel={max_parallel})"
+                );
 
-                match job_executor::execute_job(&job).await {
-                    Ok(result) => {
-                        let _ = complete_job(
-                            &client,
-                            &coordinator_url,
-                            &token,
-                            &worker_id,
-                            &job_id,
-                            &result,
-                        )
-                        .await;
-                        let mut s = status.write().await;
-                        s.jobs_completed += 1;
-                        info!("grid_worker: job {job_id} completed");
-                    }
-                    Err(e) => {
-                        let _ = fail_job(
-                            &client,
-                            &coordinator_url,
-                            &token,
-                            &worker_id,
-                            &job_id,
-                            &e,
-                        )
-                        .await;
-                        let mut s = status.write().await;
-                        s.jobs_failed += 1;
-                        warn!("grid_worker: job {job_id} failed: {e}");
+                // Spawn each job as a separate tokio task
+                for job in jobs {
+                    let sem = Arc::clone(&semaphore);
+                    let client = client.clone();
+                    let url = coordinator_url.clone();
+                    let tok = token.clone();
+                    let wid = worker_id.clone();
+                    let completed_counter = Arc::clone(&jobs_completed);
+                    let failed_counter = Arc::clone(&jobs_failed);
+                    let flight_counter = Arc::clone(&in_flight);
+
+                    tokio::spawn(async move {
+                        // Acquire semaphore permit (blocks if at max_parallel)
+                        let _permit = match sem.acquire().await {
+                            Ok(p) => p,
+                            Err(_) => {
+                                error!("grid_worker: semaphore closed unexpectedly");
+                                return;
+                            }
+                        };
+
+                        flight_counter.fetch_add(1, Ordering::Relaxed);
+
+                        let job_id = job["job_id"]
+                            .as_str()
+                            .unwrap_or("unknown")
+                            .to_string();
+
+                        let job_start = Instant::now();
+
+                        match job_executor::execute_job(&job).await {
+                            Ok(result) => {
+                                let compute_secs = result["compute_seconds"]
+                                    .as_f64()
+                                    .unwrap_or(job_start.elapsed().as_secs_f64());
+
+                                let _ = complete_job(
+                                    &client,
+                                    &url,
+                                    &tok,
+                                    &wid,
+                                    &job_id,
+                                    &result,
+                                    compute_secs,
+                                )
+                                .await;
+                                completed_counter.fetch_add(1, Ordering::Relaxed);
+                                info!("grid_worker: job {job_id} completed in {compute_secs:.1}s");
+                            }
+                            Err(e) => {
+                                let _ = fail_job(
+                                    &client, &url, &tok, &wid, &job_id, &e,
+                                )
+                                .await;
+                                failed_counter.fetch_add(1, Ordering::Relaxed);
+                                warn!("grid_worker: job {job_id} failed: {e}");
+                            }
+                        }
+
+                        flight_counter.fetch_sub(1, Ordering::Relaxed);
+                        // _permit is dropped here, releasing the semaphore slot
+                    });
+                }
+
+                // Small pause between dequeue cycles to avoid hammering the API
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                    _ = shutdown.notified() => {
+                        info!("grid_worker: shutdown between dequeue cycles");
+                        break;
                     }
                 }
             }
-            Ok(None) => {
+            Ok(_) => {
                 // No jobs available — back off
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(idle_backoff_secs)) => {}
@@ -499,7 +615,6 @@ pub async fn run_worker(
             }
             Err(e) => {
                 warn!("grid_worker: dequeue error: {e}");
-                // Back off on errors too
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(idle_backoff_secs)) => {}
                     _ = shutdown.notified() => {
@@ -512,12 +627,40 @@ pub async fn run_worker(
         }
     }
 
+    // Wait for in-flight jobs to finish (up to 30 seconds)
+    let remaining = in_flight.load(Ordering::Relaxed);
+    if remaining > 0 {
+        info!(
+            "grid_worker: waiting for {remaining} in-flight jobs to complete (max 30s)..."
+        );
+        let drain_start = Instant::now();
+        while in_flight.load(Ordering::Relaxed) > 0
+            && drain_start.elapsed().as_secs() < 30
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        let still_remaining = in_flight.load(Ordering::Relaxed);
+        if still_remaining > 0 {
+            warn!(
+                "grid_worker: {still_remaining} jobs still in flight at shutdown — \
+                 they will be abandoned"
+            );
+        }
+    }
+
     // Final status update
     {
         let mut s = status.write().await;
         s.running = false;
         s.uptime_secs = start_time.elapsed().as_secs();
+        s.jobs_completed = jobs_completed.load(Ordering::Relaxed);
+        s.jobs_failed = jobs_failed.load(Ordering::Relaxed);
     }
 
-    info!("grid_worker: stopped");
+    info!(
+        "grid_worker: stopped (completed={}, failed={}, uptime={}s)",
+        jobs_completed.load(Ordering::Relaxed),
+        jobs_failed.load(Ordering::Relaxed),
+        start_time.elapsed().as_secs()
+    );
 }
