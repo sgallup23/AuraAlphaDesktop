@@ -194,3 +194,11 @@ mod tests {
         assert!(prediction < 0.0);
     }
 }
+
+/// Grid worker entry point: takes raw JSON params, returns JSON result.
+pub fn execute_ml_job(params_json: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let params: MlParams = serde_json::from_value(params_json.clone())
+        .unwrap_or_default();
+    let result = execute_ml_inference(&params);
+    serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+}

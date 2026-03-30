@@ -153,24 +153,71 @@ pub async fn execute_job(job: &serde_json::Value) -> Result<serde_json::Value, S
     info!("job_executor: dispatching job {job_id} (type={job_type})");
 
     match job_type {
-        // Compute-intensive jobs — delegate to Python sidecar
-        "backtest" | "research_backtest" => execute_via_sidecar("backtest", job).await,
-        "scan" | "signal_gen" => execute_via_sidecar("scan", job).await,
-        "ml_inference" => execute_via_sidecar("ml_inference", job).await,
-        "feature_extraction" => execute_via_sidecar("feature_extraction", job).await,
+        // Compute-intensive jobs — pure Rust via compute module (zero Python)
+        "backtest" | "research_backtest" => execute_rust_backtest(job).await,
+        "scan" | "signal_gen" => execute_rust_scan(job).await,
+        "ml_inference" => execute_rust_ml(job).await,
+        "feature_extraction" => execute_rust_features(job).await,
 
-        // Lightweight jobs — pure Rust, no subprocess
+        // Lightweight jobs — pure Rust
         "health_check" => execute_health_check(job).await,
         "ping" => execute_ping(job).await,
 
         other => {
-            warn!("job_executor: unknown job_type '{other}' — attempting sidecar execution");
-            // Try the sidecar anyway; it will return a proper error if unsupported
-            execute_via_sidecar(other, job).await
+            warn!("job_executor: unknown job_type '{other}' — running as backtest");
+            execute_rust_backtest(job).await
         }
     }
 }
 
+// ── Rust-native compute dispatch (zero Python) ──────────────────────────────
+
+async fn execute_rust_backtest(job: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let start = Instant::now();
+    let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
+    let result = tokio::task::spawn_blocking(move || {
+        crate::compute::backtest::execute_backtest_job(&params)
+    }).await.map_err(|e| format!("backtest task failed: {e}"))??;
+    let mut r = result;
+    r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
+    Ok(r)
+}
+
+async fn execute_rust_scan(job: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let start = Instant::now();
+    let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
+    let result = tokio::task::spawn_blocking(move || {
+        crate::compute::scanner::execute_scan_job(&params)
+    }).await.map_err(|e| format!("scan task failed: {e}"))??;
+    let mut r = result;
+    r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
+    Ok(r)
+}
+
+async fn execute_rust_ml(job: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let start = Instant::now();
+    let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
+    let result = tokio::task::spawn_blocking(move || {
+        crate::compute::ml::execute_ml_job(&params)
+    }).await.map_err(|e| format!("ml task failed: {e}"))??;
+    let mut r = result;
+    r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
+    Ok(r)
+}
+
+async fn execute_rust_features(job: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let start = Instant::now();
+    let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
+    let result = tokio::task::spawn_blocking(move || {
+        crate::compute::features::execute_features_job(&params)
+    }).await.map_err(|e| format!("feature extraction task failed: {e}"))??;
+    let mut r = result;
+    r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
+    Ok(r)
+}
+
+// ── Legacy Python sidecar (kept as dead code for reference) ─────────────────
+#[allow(dead_code)]
 /// Spawn the Python sidecar subprocess and capture its JSON output.
 async fn execute_via_sidecar(
     job_type: &str,

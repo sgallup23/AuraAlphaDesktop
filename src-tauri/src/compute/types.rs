@@ -159,7 +159,7 @@ pub struct MlPrediction {
 // ── Backtest job params (deserialized from IPC) ─────────────────────
 
 /// Parameters for a local backtest invocation from the frontend.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct BacktestParams {
     #[serde(default)]
     pub strategy_family: String,
@@ -256,7 +256,7 @@ fn default_gap_threshold_pct() -> f64 { 0.03 }
 fn default_min_distance_from_sma() -> f64 { 0.02 }
 
 /// Parameters for a local scan invocation.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ScanParams {
     #[serde(default)]
     pub symbols: Vec<String>,
@@ -278,7 +278,7 @@ fn default_region() -> String { "us".to_string() }
 fn default_scan_type() -> String { "momentum".to_string() }
 
 /// Parameters for a local ML inference invocation.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct MlParams {
     #[serde(default)]
     pub symbols: Vec<String>,
@@ -293,7 +293,7 @@ pub struct MlParams {
 fn default_model() -> String { "ensemble_technical".to_string() }
 
 /// Parameters for feature extraction.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct FeatureExtractionParams {
     #[serde(default)]
     pub symbols: Vec<String>,

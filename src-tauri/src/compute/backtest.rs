@@ -601,6 +601,14 @@ pub async fn run_local_backtest(params: BacktestParams) -> Result<BacktestJobRes
     Ok(result)
 }
 
+/// Grid worker entry point: takes raw JSON params, returns JSON result.
+pub fn execute_backtest_job(params_json: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let params: BacktestParams = serde_json::from_value(params_json.clone())
+        .unwrap_or_default();
+    let result = execute_backtest(&params);
+    serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 fn round4(v: f64) -> f64 {
