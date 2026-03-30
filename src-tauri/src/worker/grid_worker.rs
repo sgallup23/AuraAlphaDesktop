@@ -132,6 +132,16 @@ async fn register(
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
+    let cpu_cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1);
+    let memory_gb = {
+        use sysinfo::System;
+        let mut sys = System::new();
+        sys.refresh_memory();
+        (sys.total_memory() as f64 / 1_073_741_824.0).round() as u32
+    };
+
     let body = serde_json::json!({
         "worker_id": worker_id,
         "hostname": machine_hostname,
@@ -139,6 +149,8 @@ async fn register(
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "version": env!("CARGO_PKG_VERSION"),
+        "cpu_cores": cpu_cores,
+        "memory_gb": memory_gb,
     });
 
     let resp = client
