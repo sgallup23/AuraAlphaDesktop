@@ -34,8 +34,8 @@ pub async fn api_proxy(
         rel_path
     );
 
-    // Try local API first (fast timeout)
-    match do_request(&method, &local_url, body.as_deref(), auth_token.as_deref(), 5).await {
+    // Try local API first (fast timeout — fail quickly to cloud fallback)
+    match do_request(&method, &local_url, body.as_deref(), auth_token.as_deref(), 2).await {
         Ok(result) => Ok(result),
         Err(_local_err) => {
             // Fall back to cloud (short timeout — proxied networks hang forever)
@@ -45,7 +45,7 @@ pub async fn api_proxy(
                 if rel_path.starts_with('/') { "" } else { "/" },
                 rel_path
             );
-            do_request(&method, &remote_url, body.as_deref(), auth_token.as_deref(), 3).await
+            do_request(&method, &remote_url, body.as_deref(), auth_token.as_deref(), 10).await
         }
     }
 }
