@@ -24,7 +24,7 @@ pub fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     let worker_item = MenuItem::with_id(app, "worker", "Start Worker", true, None::<&str>)?;
     let research_item =
         MenuItem::with_id(app, "research", "Research: Start", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Exit Aura Alpha", true, None::<&str>)?;
 
     let menu = Menu::with_items(app, &[&show, &health, &worker_item, &research_item, &quit])?;
 
