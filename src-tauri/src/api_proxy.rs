@@ -1,13 +1,12 @@
-// API proxy: tries local API first (localhost:8020), falls back to cloud.
-// In standalone mode the local sidecar handles everything.
-// Cloud fallback only used if local sidecar is unreachable.
+// API proxy: cloud-first (auraalpha.cc), local fallback (localhost:8020).
+// Production users connect to cloud. Local API is only for development.
 
 use crate::config::{DEFAULT_CLOUD_URL, DEFAULT_LOCAL_API};
 
 /// Maximum response body size: 10 MB.
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
-/// IPC command: generic API proxy — tries local first, falls back to cloud.
+/// IPC command: generic API proxy — cloud first, local fallback.
 #[tauri::command]
 pub async fn api_proxy(
     method: String,
@@ -27,25 +26,25 @@ pub async fn api_proxy(
         path
     };
 
-    let local_url = format!(
+    let cloud_url = format!(
         "{}{}{}",
-        DEFAULT_LOCAL_API,
+        DEFAULT_CLOUD_URL,
         if rel_path.starts_with('/') { "" } else { "/" },
         rel_path
     );
 
-    // Try local API first (fast timeout — fail quickly to cloud fallback)
-    match do_request(&method, &local_url, body.as_deref(), auth_token.as_deref(), 2).await {
+    // Try cloud first (production API)
+    match do_request(&method, &cloud_url, body.as_deref(), auth_token.as_deref(), 10).await {
         Ok(result) => Ok(result),
-        Err(_local_err) => {
-            // Fall back to cloud (short timeout — proxied networks hang forever)
-            let remote_url = format!(
+        Err(_cloud_err) => {
+            // Fall back to local API (development only)
+            let local_url = format!(
                 "{}{}{}",
-                DEFAULT_CLOUD_URL,
+                DEFAULT_LOCAL_API,
                 if rel_path.starts_with('/') { "" } else { "/" },
                 rel_path
             );
-            do_request(&method, &remote_url, body.as_deref(), auth_token.as_deref(), 10).await
+            do_request(&method, &local_url, body.as_deref(), auth_token.as_deref(), 3).await
         }
     }
 }

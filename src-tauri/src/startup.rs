@@ -81,16 +81,15 @@ pub fn check_minimum_hardware() {
 }
 
 // Local-first: try local sidecar, cloud is backup only
-// 0W: Derived from config::DEFAULT_LOCAL_API — single source of truth.
-// Rust const doesn't allow format!(), so we use functions.
+// 0W: Cloud-first — production API is on auraalpha.cc, not localhost.
 pub(crate) fn health_url() -> String {
-    format!("{}/api/system/health", config::DEFAULT_LOCAL_API)
+    format!("{}/api/system/health", config::DEFAULT_CLOUD_URL)
 }
 pub(crate) fn telemetry_url() -> String {
-    format!("{}/api/telemetry/latest", config::DEFAULT_LOCAL_API)
+    format!("{}/api/telemetry/latest", config::DEFAULT_CLOUD_URL)
 }
 pub(crate) fn remote_api_url() -> String {
-    format!("{}/api/remote", config::DEFAULT_LOCAL_API)
+    format!("{}/api/remote", config::DEFAULT_CLOUD_URL)
 }
 
 // ── Shared types (also used by tray.rs) ──────────────────────────────
@@ -589,29 +588,15 @@ pub async fn startup_check(app: tauri::AppHandle) -> Result<serde_json::Value, S
         "needs_onboarding": true,
     });
 
-    // 1. Check API health — try local first, fall back to cloud
+    // 1. Check API health (cloud-first — auraalpha.cc is production)
     let client = reqwest::Client::new();
-    let local_ok = client
+    if let Ok(resp) = client
         .get(&health_url())
-        .timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
-
-    if local_ok {
-        status["api_reachable"] = serde_json::Value::Bool(true);
-    } else {
-        // Fall back to cloud
-        let cloud_url = format!("{}/api/system/health", config::DEFAULT_CLOUD_URL);
-        if let Ok(resp) = client
-            .get(&cloud_url)
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-        {
-            status["api_reachable"] = serde_json::Value::Bool(resp.status().is_success());
-        }
+    {
+        status["api_reachable"] = serde_json::Value::Bool(resp.status().is_success());
     }
 
     // 2. Check lock file for crash detection
