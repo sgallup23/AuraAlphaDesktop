@@ -211,12 +211,10 @@ jobs:
         run: |
           TAG=$(grep '"version"' src-tauri/tauri.conf.json | head -1 | grep -oP '[\d.]+')
           echo "Uploading updater bundles for v${TAG}..."
-          for f in src-tauri/target/release/bundle/**/*.zip src-tauri/target/release/bundle/**/*.zip.sig src-tauri/target/release/bundle/**/*.tar.gz.sig; do
-            if [ -f "$f" ]; then
-              name=$(basename "$f")
-              echo "  Uploading $name"
-              gh release upload "v${TAG}" "$f" --clobber 2>/dev/null || true
-            fi
+          find src-tauri/target/release/bundle -type f \( -name "*.zip" -o -name "*.zip.sig" -o -name "*.tar.gz.sig" \) | while read f; do
+            name=$(basename "$f")
+            echo "  Uploading $name"
+            gh release upload "v${TAG}" "$f" --clobber 2>/dev/null || true
           done
 
       # ── Windows: sign the final installer artifacts after bundling ──
