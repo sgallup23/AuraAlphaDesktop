@@ -17,6 +17,7 @@ const IntelligenceDashboardPanel = lazy(() => import('../panels/IntelligenceDash
 const RegimePanel = lazy(() => import('../panels/RegimePanel'));
 const PortfolioBrainPanel = lazy(() => import('../panels/PortfolioBrainPanel'));
 const MetaAllocatorPanel = lazy(() => import('../panels/MetaAllocatorPanel'));
+const GridComputePanel = lazy(() => import('../panels/GridComputePanel'));
 
 export const PANELS = {
   'bot-command':    { id: 'bot-command',    title: 'Bot Command Center', component: BotCommandPanel, closable: true, group: 'main' },
@@ -34,6 +35,7 @@ export const PANELS = {
   'regimes':        { id: 'regimes',        title: 'Regimes',            component: RegimePanel,      closable: true, group: 'main' },
   'portfolio-brain':{ id: 'portfolio-brain', title: 'Portfolio Brain',   component: PortfolioBrainPanel, closable: true, group: 'main' },
   'meta-allocator': { id: 'meta-allocator', title: 'Meta Allocator',    component: MetaAllocatorPanel, closable: true, group: 'main' },
+  'grid-compute':   { id: 'grid-compute',   title: 'Grid Compute',      component: GridComputePanel,   closable: true, group: 'main' },
 };
 
 export function getPanelComponent(panelId) {

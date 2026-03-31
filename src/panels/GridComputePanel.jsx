@@ -81,9 +81,9 @@ export default function GridComputePanel() {
   const queueDepth = status?.queue_depth ?? status?.pending_jobs ?? status?.queue_size
     ?? (status?.jobs_by_status ? Object.values(status.jobs_by_status).reduce((a, b) => a + b, 0) : '--');
   const workerList = status?.workers || [];
-  const activeWorkers = status?.active_workers ?? status?.worker_count
-    ?? workerList.filter(w => w.status === 'online' || w.status === 'busy').length
-    || status?.workers_by_status ? Object.entries(status?.workers_by_status || {}).filter(([s]) => s !== 'dead' && s !== 'offline').reduce((a, [, v]) => a + v, 0) : '--';
+  const activeWorkers = (status?.active_workers ?? status?.worker_count
+    ?? workerList.filter(w => w.status === 'online' || w.status === 'busy').length)
+    || (status?.workers_by_status ? Object.entries(status.workers_by_status).filter(([s]) => s !== 'dead' && s !== 'offline').reduce((a, [, v]) => a + v, 0) : '--');
   const completed = status?.jobs_completed ?? status?.completed ?? status?.total_completed
     ?? status?.jobs_by_status?.completed ?? '--';
   const throughputRaw = status?.throughput ?? status?.jobs_per_min ?? status?.jobs_per_minute
