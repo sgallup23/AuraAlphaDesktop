@@ -177,6 +177,7 @@ export default function WorkspaceShell() {
             ref={dockRef}
             defaultLayout={DEFAULT_LAYOUT}
             loadTab={loadTab}
+            groups={{ main: { floatable: true, maximizable: true } }}
             style={{ position: 'absolute', inset: 0 }}
           />
         </DockErrorBoundary>
