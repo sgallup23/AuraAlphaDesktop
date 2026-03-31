@@ -589,15 +589,29 @@ pub async fn startup_check(app: tauri::AppHandle) -> Result<serde_json::Value, S
         "needs_onboarding": true,
     });
 
-    // 1. Check API health
+    // 1. Check API health — try local first, fall back to cloud
     let client = reqwest::Client::new();
-    if let Ok(resp) = client
+    let local_ok = client
         .get(&health_url())
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(2))
         .send()
         .await
-    {
-        status["api_reachable"] = serde_json::Value::Bool(resp.status().is_success());
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    if local_ok {
+        status["api_reachable"] = serde_json::Value::Bool(true);
+    } else {
+        // Fall back to cloud
+        let cloud_url = format!("{}/api/system/health", config::DEFAULT_CLOUD_URL);
+        if let Ok(resp) = client
+            .get(&cloud_url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            status["api_reachable"] = serde_json::Value::Bool(resp.status().is_success());
+        }
     }
 
     // 2. Check lock file for crash detection
