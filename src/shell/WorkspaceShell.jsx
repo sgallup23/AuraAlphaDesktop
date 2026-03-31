@@ -1,34 +1,7 @@
 import { useState, useEffect, useCallback, useRef, Suspense, Component } from 'react';
-import DockLayout from 'rc-dock';
-
-// Catch DockLayout crashes (corrupted saved layouts) without killing the whole app
-class DockErrorBoundary extends Component {
-  state = { crashed: false };
-  static getDerivedStateFromError() { return { crashed: true }; }
-  componentDidCatch(err) { console.error('[DockLayout crash]', err); }
-  render() {
-    if (this.state.crashed) {
-      return (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: '#0D1117', color: '#E6EDF3', fontFamily: 'system-ui' }}>
-          <div style={{ textAlign: 'center' }}>
-            <p style={{ color: '#8B949E', marginBottom: 12 }}>Workspace layout failed to load.</p>
-            <button onClick={async () => {
-              try { const { invoke: inv } = await import('@tauri-apps/api/core'); await inv('save_workspace', { name: 'default', layoutJson: '{}' }); } catch {}
-              localStorage.clear();
-              this.setState({ crashed: false });
-              window.location.reload();
-            }} style={{ padding: '8px 20px', background: '#58A6FF', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
-              Reset Workspace
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-import 'rc-dock/dist/rc-dock-dark.css';
-import '../docking/dockTheme.css';
+import { Layout, Model, Actions } from 'flexlayout-react';
+import 'flexlayout-react/style/dark.css';
+import './flexTheme.css';
 import { invoke } from '@tauri-apps/api/core';
 import TopBar from './TopBar';
 import { PANELS } from '../docking/panelRegistry';
@@ -37,21 +10,48 @@ import CommandPalette from '../components/CommandPalette';
 import { useAuth } from '../contexts/AuthContext';
 import { usePreferences } from '../contexts/PreferencesContext';
 
+// Error boundary — catches panel render crashes without killing the whole workspace
+class PanelErrorBoundary extends Component {
+  state = { error: null };
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(err) { console.error('[Panel crash]', this.props.panelId, err); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 16, color: '#F85149', fontFamily: 'system-ui', fontSize: 13 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Panel Error</div>
+          <div style={{ color: '#8B949E' }}>{this.state.error.message}</div>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{ marginTop: 8, padding: '4px 12px', background: '#30363D', color: '#E6EDF3', border: '1px solid #484F58', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function PanelWrapper({ panelId }) {
   const panel = PANELS[panelId];
   if (!panel) return <div className="p-4 text-aura-muted">Unknown panel: {panelId}</div>;
-  const Component = panel.component;
+  const PanelComponent = panel.component;
   return (
-    <Suspense fallback={<div className="p-4 text-aura-muted animate-pulse">Loading {panel.title}...</div>}>
-      <div className="panel-content">
-        <Component />
-      </div>
-    </Suspense>
+    <PanelErrorBoundary panelId={panelId}>
+      <Suspense fallback={<div className="p-4 text-aura-muted animate-pulse">Loading {panel.title}...</div>}>
+        <div className="panel-content" style={{ height: '100%', overflow: 'auto' }}>
+          <PanelComponent />
+        </div>
+      </Suspense>
+    </PanelErrorBoundary>
   );
 }
 
 export default function WorkspaceShell() {
-  const dockRef = useRef(null);
+  const [model, setModel] = useState(() => Model.fromJson(DEFAULT_LAYOUT));
+  const layoutRef = useRef(null);
   const [activeWorkspace, setActiveWorkspace] = useState('default');
   const [workspaces, setWorkspaces] = useState([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -62,41 +62,38 @@ export default function WorkspaceShell() {
     invoke('list_workspaces').then(setWorkspaces).catch(() => {});
   }, []);
 
-  const loadTab = useCallback((tab) => {
-    return {
-      ...tab,
-      content: <PanelWrapper panelId={tab.id} />,
-      closable: PANELS[tab.id]?.closable ?? true,
-      minWidth: 200,
-      minHeight: 150,
-    };
+  // Render panel content for FlexLayout
+  const factory = useCallback((node) => {
+    const component = node.getComponent();
+    return <PanelWrapper panelId={component} />;
   }, []);
 
   const handleWorkspaceChange = useCallback(async (name) => {
     setActiveWorkspace(name);
     if (name === 'default') {
-      dockRef.current?.loadLayout(DEFAULT_LAYOUT);
+      setModel(Model.fromJson(DEFAULT_LAYOUT));
       return;
     }
     try {
       const json = await invoke('load_workspace', { name });
       const layout = JSON.parse(json);
-      dockRef.current?.loadLayout(layout);
+      setModel(Model.fromJson(layout));
     } catch (e) {
       console.warn('Failed to load workspace, falling back to default:', e);
-      dockRef.current?.loadLayout(DEFAULT_LAYOUT);
+      setModel(Model.fromJson(DEFAULT_LAYOUT));
     }
   }, []);
 
   const handleAddPanel = useCallback((panelId) => {
     const panel = PANELS[panelId];
-    if (!panel || !dockRef.current) return;
-    dockRef.current.dockMove(
-      { id: `${panelId}-${Date.now()}`, title: panel.title, content: <PanelWrapper panelId={panelId} />, closable: true, minWidth: 200, minHeight: 150 },
-      null,
-      'float'
-    );
-  }, []);
+    if (!panel || !model) return;
+    model.doAction(Actions.addNode(
+      { type: 'tab', name: panel.title, component: panelId },
+      model.getRoot().getId(),
+      0, // insert at first position
+      false
+    ));
+  }, [model]);
 
   const handlePaletteAction = useCallback((actionId) => {
     switch (actionId) {
@@ -122,22 +119,10 @@ export default function WorkspaceShell() {
 
   useEffect(() => {
     const handler = (e) => {
-      // Ctrl+N or Cmd+N: Add new chart panel
-      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
-        e.preventDefault();
-        handleAddPanel('chart');
-      }
-      // Ctrl+B or Cmd+B: Toggle bot command
-      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
-        e.preventDefault();
-        handleAddPanel('bot-command');
-      }
-      // Ctrl+K or Cmd+K: Open command palette
       if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
         e.preventDefault();
         setPaletteOpen(prev => !prev);
       }
-      // Ctrl+Shift+P or Cmd+Shift+P: Open command palette
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'P') {
         e.preventDefault();
         setPaletteOpen(prev => !prev);
@@ -145,11 +130,11 @@ export default function WorkspaceShell() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleAddPanel]);
+  }, []);
 
   const handleSaveWorkspace = useCallback(async () => {
-    const layout = dockRef.current?.saveLayout();
-    if (!layout) return;
+    if (!model) return;
+    const layout = model.toJson();
     const name = prompt('Workspace name:', activeWorkspace === 'default' ? '' : activeWorkspace);
     if (!name) return;
     try {
@@ -160,7 +145,7 @@ export default function WorkspaceShell() {
     } catch (e) {
       console.warn('Failed to save workspace:', e);
     }
-  }, [activeWorkspace]);
+  }, [model, activeWorkspace]);
 
   return (
     <div className="h-screen flex flex-col bg-aura-bg">
@@ -172,15 +157,11 @@ export default function WorkspaceShell() {
         onAddPanel={handleAddPanel}
       />
       <div className="flex-1 relative">
-        <DockErrorBoundary>
-          <DockLayout
-            ref={dockRef}
-            defaultLayout={DEFAULT_LAYOUT}
-            loadTab={loadTab}
-            groups={{ main: { floatable: true, maximizable: true } }}
-            style={{ position: 'absolute', inset: 0 }}
-          />
-        </DockErrorBoundary>
+        <Layout
+          ref={layoutRef}
+          model={model}
+          factory={factory}
+        />
       </div>
       <CommandPalette
         open={paletteOpen}

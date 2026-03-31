@@ -1,31 +1,90 @@
-// Default docking layout — 3-column split
-// rc-dock requires: dockbox wrapper, each tab panel needs tabs array with id+title
+// Default FlexLayout model — 3-column Bloomberg-style trading desk
+// Uses flexlayout-react JSON model format
+// https://github.com/caplin/FlexLayout
+
 export const DEFAULT_LAYOUT = {
-  dockbox: {
-    mode: 'horizontal',
+  global: {
+    tabEnableClose: true,
+    tabEnableFloat: true,
+    tabSetEnableMaximize: true,
+    tabSetMinWidth: 200,
+    tabSetMinHeight: 150,
+    borderBarSize: 28,
+    tabSetHeaderHeight: 32,
+    tabSetTabStripHeight: 32,
+  },
+  layout: {
+    type: 'row',
+    weight: 100,
     children: [
+      // Left column: bots + grid
       {
-        mode: 'vertical',
-        size: 300,
+        type: 'row',
+        weight: 25,
         children: [
-          { tabs: [{ id: 'bot-command', title: 'Bot Command Center' }] },
-          { tabs: [{ id: 'positions', title: 'Positions' }, { id: 'grid-compute', title: 'Grid Compute' }] },
+          {
+            type: 'tabset',
+            weight: 60,
+            children: [
+              { type: 'tab', name: 'Bot Command Center', component: 'bot-command' },
+              { type: 'tab', name: 'Positions', component: 'positions' },
+            ],
+          },
+          {
+            type: 'tabset',
+            weight: 40,
+            children: [
+              { type: 'tab', name: 'Grid Compute', component: 'grid-compute' },
+              { type: 'tab', name: 'Portfolio Brain', component: 'portfolio-brain' },
+            ],
+          },
         ],
       },
+      // Center column: intelligence + chart
       {
-        mode: 'vertical',
-        size: 600,
+        type: 'row',
+        weight: 50,
         children: [
-          { tabs: [{ id: 'chart', title: 'Chart' }, { id: 'intelligence', title: 'Intelligence' }, { id: 'backtest', title: 'Backtests' }] },
-          { tabs: [{ id: 'portfolio-brain', title: 'Portfolio Brain' }, { id: 'regimes', title: 'Regimes' }, { id: 'meta-allocator', title: 'Meta Allocator' }] },
+          {
+            type: 'tabset',
+            weight: 50,
+            children: [
+              { type: 'tab', name: 'Chart', component: 'chart' },
+              { type: 'tab', name: 'Intelligence', component: 'intelligence' },
+              { type: 'tab', name: 'Backtests', component: 'backtest' },
+            ],
+          },
+          {
+            type: 'tabset',
+            weight: 50,
+            children: [
+              { type: 'tab', name: 'Regimes', component: 'regimes' },
+              { type: 'tab', name: 'Meta Allocator', component: 'meta-allocator' },
+            ],
+          },
         ],
       },
+      // Right column: discovery tools
       {
-        mode: 'vertical',
-        size: 300,
+        type: 'row',
+        weight: 25,
         children: [
-          { tabs: [{ id: 'scanner', title: 'Scanner' }, { id: 'watchlist', title: 'Watchlist' }, { id: 'strategies', title: 'Strategies' }] },
-          { tabs: [{ id: 'alerts', title: 'Alerts' }] },
+          {
+            type: 'tabset',
+            weight: 60,
+            children: [
+              { type: 'tab', name: 'Scanner', component: 'scanner' },
+              { type: 'tab', name: 'Watchlist', component: 'watchlist' },
+              { type: 'tab', name: 'Strategies', component: 'strategies' },
+            ],
+          },
+          {
+            type: 'tabset',
+            weight: 40,
+            children: [
+              { type: 'tab', name: 'Alerts', component: 'alerts' },
+            ],
+          },
         ],
       },
     ],

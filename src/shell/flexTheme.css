@@ -1,0 +1,85 @@
+/* Aura Alpha dark theme overrides for flexlayout-react */
+
+.flexlayout__layout {
+  --color-text: #E6EDF3;
+  --color-background: #0D1117;
+  --color-base: #0D1117;
+  --color-1: #161B22;
+  --color-2: #1C2128;
+  --color-3: #30363D;
+  --color-4: #484F58;
+  --color-5: #8B949E;
+  --color-6: #E6EDF3;
+  --color-drag1: rgba(88, 166, 255, 0.15);
+  --color-drag2: rgba(88, 166, 255, 0.3);
+  --color-drag1-background: rgba(88, 166, 255, 0.06);
+  --color-drag2-background: rgba(88, 166, 255, 0.12);
+  --color-tabset-background: #161B22;
+  --color-tabset-header-background: #0D1117;
+  --color-tabset-divider-line: #30363D;
+  --color-tab-selected: #58A6FF;
+  --color-tab-selected-background: #1C2128;
+  --color-tab-unselected: #8B949E;
+  --color-tab-unselected-background: transparent;
+  --color-tab-textbox: #E6EDF3;
+  --color-tab-textbox-background: #0D1117;
+  --color-border-background: #161B22;
+  --color-border-divider-line: #30363D;
+  --color-splitter: #30363D;
+  --color-splitter-hover: #58A6FF;
+  --color-splitter-drag: #58A6FF;
+  --color-popup-background: #161B22;
+  --color-popup-border: #30363D;
+  --color-edge-marker: #58A6FF;
+  --font-size: 13px;
+  --font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+}
+
+.flexlayout__tab {
+  background: #0D1117;
+  overflow: auto;
+}
+
+.flexlayout__tabset-selected {
+  background: #161B22;
+}
+
+.flexlayout__tab_button--selected {
+  background: #1C2128;
+  color: #E6EDF3;
+}
+
+.flexlayout__tab_button:hover {
+  background: #1C2128;
+}
+
+.flexlayout__tab_button_trailing {
+  color: #8B949E;
+}
+
+.flexlayout__tab_button_trailing:hover {
+  color: #F85149;
+}
+
+.flexlayout__splitter {
+  background: #30363D;
+}
+
+.flexlayout__splitter:hover {
+  background: #58A6FF;
+}
+
+.flexlayout__tabset_header {
+  background: #0D1117;
+  border-bottom: 1px solid #30363D;
+}
+
+.flexlayout__border_button--selected {
+  color: #58A6FF;
+}
+
+/* Panel content area */
+.panel-content {
+  padding: 12px;
+  color: #E6EDF3;
+}
