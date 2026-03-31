@@ -3,6 +3,15 @@
 //! Every function matches the Python implementation exactly:
 //! same algorithm, same edge-case handling, same NaN propagation.
 //! Uses `f64::NAN` where Python uses `np.nan`.
+//!
+//! GPU-accelerated paths are available for SMA and EMA when:
+//! 1. A GPU adapter is detected (Vulkan/Metal/DX12)
+//! 2. The dataset exceeds 1000 bars (amortizes GPU overhead)
+//! Use `compute_sma_auto` / `compute_ema_auto` for the adaptive path.
+
+/// Minimum data length to prefer GPU over CPU.
+/// Below this threshold, buffer upload/download overhead dominates.
+pub const GPU_THRESHOLD: usize = 1000;
 
 /// Compute Average True Range (ATR).
 ///
@@ -166,6 +175,37 @@ pub fn compute_obv(closes: &[f64], volumes: &[f64]) -> Vec<f64> {
     }
 
     obv
+}
+
+// ── GPU-accelerated indicator wrappers ────────────────────────────────
+
+/// Compute SMA with automatic GPU/CPU selection.
+///
+/// Uses GPU when available AND data length exceeds `GPU_THRESHOLD`.
+/// Falls back to CPU otherwise. The GPU path uses f32 internally
+/// (WGSL limitation) so results may differ by ~1e-4 from f64 CPU path.
+pub async fn compute_sma_auto(data: &[f64], period: usize) -> Vec<f64> {
+    if data.len() >= GPU_THRESHOLD && super::gpu::is_gpu_available() {
+        if let Some(result) = super::gpu::gpu_compute_sma(data, period).await {
+            log::debug!("SMA computed on GPU ({} bars, period {})", data.len(), period);
+            return result;
+        }
+    }
+    compute_sma(data, period)
+}
+
+/// Compute EMA with automatic GPU/CPU selection.
+///
+/// Note: EMA is sequential, so GPU provides less speedup than SMA.
+/// The GPU path is mainly useful when batching many symbols together.
+pub async fn compute_ema_auto(data: &[f64], period: usize) -> Vec<f64> {
+    if data.len() >= GPU_THRESHOLD && super::gpu::is_gpu_available() {
+        if let Some(result) = super::gpu::gpu_compute_ema(data, period).await {
+            log::debug!("EMA computed on GPU ({} bars, period {})", data.len(), period);
+            return result;
+        }
+    }
+    compute_ema(data, period)
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────

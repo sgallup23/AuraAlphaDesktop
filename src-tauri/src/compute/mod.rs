@@ -10,6 +10,7 @@
 //! - `scanner`    — Signal scanner (momentum, reversal, breakout, volume)
 //! - `ml`         — Hand-coded ML ensemble inference
 //! - `features`   — Technical feature extraction for ML pipeline
+//! - `gpu`        — GPU-accelerated compute via wgpu (Vulkan/Metal/DX12)
 //! - `indicators` — RSI, EMA, ATR, SMA, Bollinger Bands, OBV
 //! - `data`       — OHLCV data loading from Parquet/CSV
 //! - `metrics`    — Sharpe, Sortino, profit factor, drawdown
@@ -22,6 +23,13 @@ pub mod cache;
 pub mod data;
 pub mod demo;
 pub mod features;
+#[cfg(feature = "gpu")]
+#[path = "gpu.rs"]
+pub mod gpu;
+
+#[cfg(not(feature = "gpu"))]
+#[path = "gpu_stub.rs"]
+pub mod gpu;
 pub mod hardware;
 pub mod indicators;
 pub mod metrics;

@@ -261,6 +261,9 @@ pub fn run() {
             // Offline data cache management
             compute::cache::get_cache_status,
             compute::cache::ensure_local_data,
+            // GPU compute
+            compute::gpu::gpu_compute_status,
+            compute::gpu::gpu_benchmark,
         ])
         .setup(|app| {
             // ── 0E: Crash reporting — install panic hook early ────
