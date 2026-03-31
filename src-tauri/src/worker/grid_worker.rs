@@ -67,13 +67,11 @@ async fn resolve_token(coordinator_url: &str, telemetry_consented: bool) -> Resu
         .build()
         .map_err(|e| format!("HTTP client build error: {e}"))?;
 
-    let hostname = if telemetry_consented {
-        hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string())
-    } else {
-        "anonymous".to_string()
-    };
+    // Always send real hostname for worker identification — these are the owner's machines.
+    // Telemetry consent gates analytics/crash reporting, not worker registration.
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
 
     let body = serde_json::json!({
         "hostname": hostname,
@@ -150,22 +148,18 @@ async fn register(
     // Detect GPU for registration
     let hw = crate::compute::hardware::detect_hardware();
 
-    let (machine_hostname, cpu_cores, memory_gb) = if telemetry_consented {
-        let hostname = hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get() as u32)
-            .unwrap_or(1);
-        let ram = {
-            use sysinfo::System;
-            let mut sys = System::new();
-            sys.refresh_memory();
-            (sys.total_memory() as f64 / 1_073_741_824.0).round() as u32
-        };
-        (hostname, cores, ram)
-    } else {
-        ("anonymous".to_string(), 0u32, 0u32)
+    // Always report real hardware for worker identification and capacity planning.
+    let machine_hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let cpu_cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1);
+    let memory_gb = {
+        use sysinfo::System;
+        let mut sys = System::new();
+        sys.refresh_memory();
+        (sys.total_memory() as f64 / 1_073_741_824.0).round() as u32
     };
 
     let body = serde_json::json!({
