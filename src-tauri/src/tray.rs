@@ -9,6 +9,7 @@ use tauri::{
 };
 
 use crate::{
+    background,
     bot_manager,
     startup::{self, find_research_worker_script, find_sidecar_binary, spawn_worker},
     ResearchWorkerState, WorkerState,
@@ -27,7 +28,7 @@ pub fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
 
     let menu = Menu::with_items(app, &[&show, &health, &worker_item, &research_item, &quit])?;
 
-    let _tray = TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::with_id("main")
         .menu(&menu)
         .tooltip("Aura Alpha — Trading Desk")
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -200,6 +201,10 @@ pub fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
             }
         })
         .build(app)?;
+
+    // ── Background tasks: tray P&L tooltip + signal notifications ──
+    background::spawn_tray_pnl_updater(app);
+    background::spawn_signal_monitor(app);
 
     // ── Auto-start remote worker if project found ──────────────────
     let worker_state = app.state::<WorkerState>();

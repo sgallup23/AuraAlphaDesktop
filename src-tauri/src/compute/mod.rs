@@ -6,6 +6,7 @@
 //!
 //! Modules:
 //! - `backtest`   — Full backtest engine with 25+ entry conditions, ATR-based exits
+//! - `cache`      — Offline data cache manager (seed, stats, download, eviction)
 //! - `scanner`    — Signal scanner (momentum, reversal, breakout, volume)
 //! - `ml`         — Hand-coded ML ensemble inference
 //! - `features`   — Technical feature extraction for ML pipeline
@@ -17,6 +18,7 @@
 //! - `demo`       — Demo/test data generation
 
 pub mod backtest;
+pub mod cache;
 pub mod data;
 pub mod demo;
 pub mod features;
@@ -36,6 +38,7 @@ pub use types::{
 
 // Re-export IPC commands for registration in lib.rs.
 pub use backtest::run_local_backtest;
+pub use cache::{ensure_local_data, get_cache_status};
 pub use features::run_local_feature_extraction;
 pub use ml::run_local_ml_inference;
 pub use scanner::run_local_scan;

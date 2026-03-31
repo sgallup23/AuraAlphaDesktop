@@ -1,5 +1,5 @@
 /// Startup logic: process discovery, Python resolution, sidecar spawning,
-/// crash detection, and the startup_check / clean_shutdown IPC commands.
+/// crash detection, hardware checks, and the startup_check / clean_shutdown IPC commands.
 
 use std::process::{Child, Command};
 
@@ -9,6 +9,76 @@ use tauri::Manager;
 use crate::credential_store;
 
 use crate::config;
+
+// ── 0N: Minimum hardware checks (warnings only) ─────────────────────
+
+/// Check system hardware against minimum requirements and log warnings.
+/// This never blocks startup — it only emits log::warn messages.
+pub fn check_minimum_hardware() {
+    let sys = sysinfo::System::new_all();
+
+    // Check RAM (minimum 4 GB)
+    let total_ram_bytes = sys.total_memory();
+    let total_ram_gb = total_ram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    if total_ram_gb < 4.0 {
+        log::warn!(
+            "LOW MEMORY: System has {:.1} GB RAM (minimum recommended: 4 GB). \
+             Performance may be degraded.",
+            total_ram_gb
+        );
+    } else {
+        log::info!("RAM check OK: {:.1} GB available", total_ram_gb);
+    }
+
+    // Check CPU cores (minimum 2)
+    let cpu_count = sys.cpus().len();
+    if cpu_count < 2 {
+        log::warn!(
+            "LOW CPU: System has {} CPU core(s) (minimum recommended: 2). \
+             Grid worker and backtesting performance will be limited.",
+            cpu_count
+        );
+    } else {
+        log::info!("CPU check OK: {} cores available", cpu_count);
+    }
+
+    // Check disk free space (minimum 500 MB)
+    // Use the disk where the app data directory lives
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let app_data_path = dirs::data_local_dir().unwrap_or_default();
+    let mut best_match: Option<(usize, u64)> = None; // (mount_point_len, available_space)
+
+    for disk in disks.list() {
+        let mount = disk.mount_point();
+        if app_data_path.starts_with(mount) {
+            let mount_len = mount.to_string_lossy().len();
+            match best_match {
+                Some((prev_len, _)) if mount_len > prev_len => {
+                    best_match = Some((mount_len, disk.available_space()));
+                }
+                None => {
+                    best_match = Some((mount_len, disk.available_space()));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some((_, available)) = best_match {
+        let available_mb = available as f64 / (1024.0 * 1024.0);
+        if available_mb < 500.0 {
+            log::warn!(
+                "LOW DISK SPACE: {:.0} MB free (minimum recommended: 500 MB). \
+                 Logs, grid results, and updates may fail.",
+                available_mb
+            );
+        } else {
+            log::info!("Disk check OK: {:.0} MB free", available_mb);
+        }
+    } else {
+        log::info!("Disk check: could not determine free space for app data path");
+    }
+}
 
 // Local-first: try local sidecar, cloud is backup only
 // 0W: Derived from config::DEFAULT_LOCAL_API — single source of truth.

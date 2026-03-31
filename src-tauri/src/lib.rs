@@ -1,5 +1,6 @@
 pub mod api_proxy;
 pub mod auth;
+pub mod background;
 pub mod compute;
 pub mod config;
 pub mod crash_reporter;
@@ -216,6 +217,10 @@ pub fn run() {
             preferences::load_workspace,
             preferences::list_workspaces,
             preferences::delete_workspace,
+            // Multi-monitor panel state persistence
+            preferences::save_panel_state,
+            preferences::load_panel_state,
+            preferences::remove_panel_state,
             // Remote worker
             startup::start_worker,
             startup::stop_worker,
@@ -253,10 +258,23 @@ pub fn run() {
             compute::scanner::run_local_scan,
             compute::ml::run_local_ml_inference,
             compute::features::run_local_feature_extraction,
+            // Offline data cache management
+            compute::cache::get_cache_status,
+            compute::cache::ensure_local_data,
         ])
         .setup(|app| {
             // ── 0E: Crash reporting — install panic hook early ────
             crash_reporter::install_panic_hook();
+
+            // ── 0D: Seed sample data into local cache on first launch ────
+            match compute::cache::ensure_sample_data(app.handle()) {
+                Ok(0) => { /* already seeded or no new files */ }
+                Ok(n) => log::info!("Seeded {} sample data files into local cache", n),
+                Err(e) => log::warn!("Sample data seeding failed (non-fatal): {}", e),
+            }
+
+            // ── 0N: Minimum hardware checks (warnings only, never blocks) ──
+            startup::check_minimum_hardware();
 
             // ── 0A: Migrate plaintext credentials to secure storage
             credential_store::migrate_plaintext_if_exists();
