@@ -368,22 +368,10 @@ pub fn run() {
                 });
             }
 
-            // ── Navigate WebView to auraalpha.cc (restored v4.x pattern) ──
-            // WebView is Chrome — handles proxies and Cloudflare natively.
-            // Bundled dist/ serves as splash screen during the brief delay.
-            {
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let url: tauri::Url = "https://auraalpha.cc"
-                            .parse()
-                            .expect("hardcoded URL");
-                        let _ = window.navigate(url);
-                        log::info!("Navigated WebView to auraalpha.cc");
-                    }
-                });
-            }
+            // ── Desktop uses bundled frontend (dist/) ──
+            // API calls route through Rust api_proxy: localhost:8020 → auraalpha.cc fallback.
+            // No WebView navigation to external URLs — desktop is self-contained.
+            log::info!("Desktop using bundled frontend with api_proxy for data");
 
             Ok(())
         })
