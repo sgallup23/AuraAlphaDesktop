@@ -202,6 +202,23 @@ jobs:
           releaseDraft: false
           prerelease: false
 
+      # ── Upload updater bundles (.zip + .sig) that tauri-action skips ──
+      - name: Upload updater artifacts
+        if: always()
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=$(grep '"version"' src-tauri/tauri.conf.json | head -1 | grep -oP '[\d.]+')
+          echo "Uploading updater bundles for v${TAG}..."
+          for f in src-tauri/target/release/bundle/**/*.zip src-tauri/target/release/bundle/**/*.zip.sig src-tauri/target/release/bundle/**/*.tar.gz.sig; do
+            if [ -f "$f" ]; then
+              name=$(basename "$f")
+              echo "  Uploading $name"
+              gh release upload "v${TAG}" "$f" --clobber 2>/dev/null || true
+            fi
+          done
+
       # ── Windows: sign the final installer artifacts after bundling ──
       - name: Sign Windows MSI installer
         if: matrix.platform == 'windows-latest' && steps.signing.outputs.has_windows_cert == 'true'
