@@ -7,6 +7,7 @@ pub mod local_bots;
 pub mod preferences;
 pub mod safe_io;
 pub mod startup;
+pub mod telemetry_consent;
 pub mod updater;
 pub mod worker;
 mod bot_manager;
@@ -243,6 +244,9 @@ pub fn run() {
             worker::start_grid_worker,
             worker::stop_grid_worker,
             worker::grid_worker_status,
+            // Telemetry consent (GDPR/CCPA)
+            telemetry_consent::get_telemetry_consent,
+            telemetry_consent::set_telemetry_consent,
             // Local computation (pure Rust, zero dependencies)
             compute::demo::run_demo_backtest,
             compute::backtest::run_local_backtest,
@@ -274,11 +278,11 @@ pub fn run() {
                             let sys = sysinfo::System::new_all();
                             let pid_val = sysinfo::Pid::from_u32(pid);
                             if sys.process(pid_val).is_some() {
-                                log::error!(
+                                log::info!(
                                     "Another instance is already running (PID {}). Exiting.",
                                     pid
                                 );
-                                std::process::exit(1);
+                                std::process::exit(0);
                             }
                         }
                     }

@@ -30,7 +30,10 @@ struct TokenFile {
 /// 1. `AURA_WORKER_TOKEN` environment variable
 /// 2. `~/.aura-worker/grid_token.json` file
 /// 3. Auto-provision via POST to `{coordinator}/api/cluster/contributor/auto-provision`
-async fn resolve_token(coordinator_url: &str) -> Result<(String, Option<String>), String> {
+///
+/// When `telemetry_consented` is false, the auto-provision request sends
+/// "anonymous" instead of the real hostname.
+async fn resolve_token(coordinator_url: &str, telemetry_consented: bool) -> Result<(String, Option<String>), String> {
     // 1. Environment variable
     if let Ok(token) = std::env::var("AURA_WORKER_TOKEN") {
         if !token.is_empty() {
@@ -64,9 +67,13 @@ async fn resolve_token(coordinator_url: &str) -> Result<(String, Option<String>)
         .build()
         .map_err(|e| format!("HTTP client build error: {e}"))?;
 
-    let hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let hostname = if telemetry_consented {
+        hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    } else {
+        "anonymous".to_string()
+    };
 
     let body = serde_json::json!({
         "hostname": hostname,
@@ -129,25 +136,36 @@ fn build_client() -> Result<reqwest::Client, String> {
 }
 
 /// Register this worker with the coordinator.
+///
+/// When `telemetry_consented` is false, hostname is sent as "anonymous"
+/// and cpu_cores/memory_gb are sent as 0 to protect user privacy.
 async fn register(
     client: &reqwest::Client,
     coordinator_url: &str,
     token: &str,
     worker_id: &str,
     max_parallel: u32,
+    telemetry_consented: bool,
 ) -> Result<String, String> {
-    let machine_hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    // Detect GPU for registration
+    let hw = crate::compute::hardware::detect_hardware();
 
-    let cpu_cores = std::thread::available_parallelism()
-        .map(|n| n.get() as u32)
-        .unwrap_or(1);
-    let memory_gb = {
-        use sysinfo::System;
-        let mut sys = System::new();
-        sys.refresh_memory();
-        (sys.total_memory() as f64 / 1_073_741_824.0).round() as u32
+    let (machine_hostname, cpu_cores, memory_gb) = if telemetry_consented {
+        let hostname = hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get() as u32)
+            .unwrap_or(1);
+        let ram = {
+            use sysinfo::System;
+            let mut sys = System::new();
+            sys.refresh_memory();
+            (sys.total_memory() as f64 / 1_073_741_824.0).round() as u32
+        };
+        (hostname, cores, ram)
+    } else {
+        ("anonymous".to_string(), 0u32, 0u32)
     };
 
     let body = serde_json::json!({
@@ -160,6 +178,9 @@ async fn register(
         "cpu_cores": cpu_cores,
         "memory_gb": memory_gb,
         "max_parallel": max_parallel,
+        "gpu_model": hw.gpu_name,
+        "gpu_vram_gb": (hw.gpu_vram_mb as f64 / 1024.0),
+        "cuda_available": hw.cuda_available,
         "supported_job_types": ["backtest", "research_backtest", "scan", "ml_inference", "feature_extraction"],
     });
 
@@ -200,10 +221,30 @@ async fn heartbeat(
     jobs_completed: u64,
     jobs_failed: u64,
     in_flight: u64,
+    telemetry_consented: bool,
 ) -> Result<(), String> {
-    let machine_hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let machine_hostname = if telemetry_consented {
+        hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    } else {
+        "anonymous".to_string()
+    };
+
+    // Include hardware specs so the server can update them via heartbeat
+    let hw = crate::compute::hardware::detect_hardware();
+    let cpu_cores = if telemetry_consented {
+        std::thread::available_parallelism()
+            .map(|n| n.get() as u32)
+            .unwrap_or(0)
+    } else {
+        0u32
+    };
+    let memory_gb = if telemetry_consented {
+        (hw.ram_gb).round() as u32
+    } else {
+        0u32
+    };
 
     let body = serde_json::json!({
         "worker_id": worker_id,
@@ -211,6 +252,11 @@ async fn heartbeat(
         "jobs_completed": jobs_completed,
         "jobs_failed": jobs_failed,
         "jobs_in_flight": in_flight,
+        "cpu_cores": cpu_cores,
+        "memory_gb": memory_gb,
+        "gpu_model": hw.gpu_name,
+        "gpu_vram_gb": (hw.gpu_vram_mb as f64 / 1024.0),
+        "cuda_available": hw.cuda_available,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
 
@@ -370,11 +416,16 @@ fn compute_max_parallel() -> u32 {
 /// 3. Spawn heartbeat task (30s interval)
 /// 4. Loop: dequeue batch -> spawn parallel executors -> report results
 /// 5. On `Notify` signal or unrecoverable error, exit cleanly
+///
+/// When `telemetry_consented` is false, hostname/cpu/ram fields are
+/// anonymized to comply with GDPR/CCPA requirements.
 pub async fn run_worker(
     coordinator_url: String,
     status: Arc<RwLock<WorkerStatus>>,
     shutdown: Arc<Notify>,
 ) {
+    // Check telemetry consent at worker start
+    let telemetry_consented = crate::telemetry_consent::is_telemetry_consented();
     let max_parallel = compute_max_parallel();
     info!(
         "grid_worker: starting (coordinator={coordinator_url}, max_parallel={max_parallel})"
@@ -382,7 +433,7 @@ pub async fn run_worker(
     let start_time = Instant::now();
 
     // Resolve token
-    let (token, provisioned_id) = match resolve_token(&coordinator_url).await {
+    let (token, provisioned_id) = match resolve_token(&coordinator_url, telemetry_consented).await {
         Ok(t) => t,
         Err(e) => {
             error!("grid_worker: token resolution failed: {e}");
@@ -410,6 +461,7 @@ pub async fn run_worker(
         &token,
         &initial_id,
         max_parallel,
+        telemetry_consented,
     )
     .await
     {
@@ -444,6 +496,7 @@ pub async fn run_worker(
     let hb_completed = Arc::clone(&jobs_completed);
     let hb_failed = Arc::clone(&jobs_failed);
     let hb_in_flight = Arc::clone(&in_flight);
+    let hb_telemetry = telemetry_consented;
 
     let _heartbeat_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -462,6 +515,7 @@ pub async fn run_worker(
                         completed,
                         failed,
                         flying,
+                        hb_telemetry,
                     )
                     .await;
 
