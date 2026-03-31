@@ -258,6 +258,10 @@ pub fn run() {
             compute::scanner::run_local_scan,
             compute::ml::run_local_ml_inference,
             compute::features::run_local_feature_extraction,
+            // Local ML model training (smartcore Random Forest)
+            compute::ml_train::train_local_model,
+            compute::ml_train::predict_with_local_model,
+            compute::ml_train::get_model_status,
             // Offline data cache management
             compute::cache::get_cache_status,
             compute::cache::ensure_local_data,

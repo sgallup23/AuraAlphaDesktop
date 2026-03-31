@@ -9,6 +9,7 @@
 //! - `cache`      — Offline data cache manager (seed, stats, download, eviction)
 //! - `scanner`    — Signal scanner (momentum, reversal, breakout, volume)
 //! - `ml`         — Hand-coded ML ensemble inference
+//! - `ml_train`   — Local ML training via smartcore Random Forest (zero Python)
 //! - `features`   — Technical feature extraction for ML pipeline
 //! - `gpu`        — GPU-accelerated compute via wgpu (Vulkan/Metal/DX12)
 //! - `indicators` — RSI, EMA, ATR, SMA, Bollinger Bands, OBV
@@ -34,6 +35,7 @@ pub mod hardware;
 pub mod indicators;
 pub mod metrics;
 pub mod ml;
+pub mod ml_train;
 pub mod scanner;
 pub mod types;
 
@@ -49,4 +51,5 @@ pub use backtest::run_local_backtest;
 pub use cache::{ensure_local_data, get_cache_status};
 pub use features::run_local_feature_extraction;
 pub use ml::run_local_ml_inference;
+pub use ml_train::{get_model_status, predict_with_local_model, train_local_model};
 pub use scanner::run_local_scan;

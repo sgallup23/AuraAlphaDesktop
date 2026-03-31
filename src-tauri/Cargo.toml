@@ -1,6 +1,6 @@
 [package]
 name = "aura-alpha-desktop"
-version = "6.0.0"
+version = "6.1.0"
 description = "Aura Alpha Trading Desk"
 authors = ["Aura Alpha"]
 edition = "2021"
@@ -35,6 +35,7 @@ sha2 = "0.10"
 rand = "0.8"
 rayon = "1.10"
 polars = { version = "0.46", features = ["parquet", "csv", "lazy", "dtype-date", "dtype-datetime"] }
+smartcore = { version = "0.4", features = ["serde"] }
 bytemuck = { version = "1", features = ["derive"] }
 wgpu = { version = "29", default-features = false, features = ["wgsl", "vulkan", "dx12", "metal"], optional = true }
 
