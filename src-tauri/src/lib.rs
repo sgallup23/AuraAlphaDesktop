@@ -389,9 +389,9 @@ pub fn run() {
                     let _ = window.hide();
                 }
             }
-            RunEvent::ExitRequested { api, .. } => {
-                // Keep running in tray
-                api.prevent_exit();
+            RunEvent::ExitRequested { .. } => {
+                // Allow exit — tray "Quit" and app.exit() will terminate cleanly.
+                // Window close is already handled above (hide to tray, not exit).
             }
             _ => {}
         });
