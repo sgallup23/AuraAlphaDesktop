@@ -368,10 +368,24 @@ pub fn run() {
                 });
             }
 
-            // ── Desktop uses bundled frontend (dist/) ──
-            // API calls route through Rust api_proxy: localhost:8020 → auraalpha.cc fallback.
-            // No WebView navigation to external URLs — desktop is self-contained.
-            log::info!("Desktop using bundled frontend with api_proxy for data");
+            // ── Navigate WebView to auraalpha.cc (cloud-first) ──
+            // Bundled dist/ is the splash screen during the brief load delay.
+            // The web frontend IS the product — desktop wraps it with native
+            // features (tray, grid worker, credential store, auto-update).
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // Brief delay for splash screen visibility
+                    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let url: tauri::Url = "https://auraalpha.cc"
+                            .parse()
+                            .expect("hardcoded URL");
+                        let _ = window.navigate(url);
+                        log::info!("Navigated WebView to auraalpha.cc");
+                    }
+                });
+            }
 
             Ok(())
         })
