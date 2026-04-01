@@ -217,24 +217,17 @@ async fn heartbeat(
     in_flight: u64,
     telemetry_consented: bool,
 ) -> Result<(), String> {
-    let machine_hostname = if telemetry_consented {
-        hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string())
-    } else {
-        "anonymous".to_string()
-    };
+    // Always send hostname and hardware — these are the owner's own machines,
+    // not anonymous third-party contributors. Telemetry consent is for analytics only.
+    let machine_hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
 
-    // Include hardware specs so the server can update them via heartbeat
     let hw = crate::compute::hardware::detect_hardware();
-    let cpu_cores = if telemetry_consented {
-        std::thread::available_parallelism()
-            .map(|n| n.get() as u32)
-            .unwrap_or(0)
-    } else {
-        0u32
-    };
-    let memory_gb = if telemetry_consented {
+    let cpu_cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1);
+    let memory_gb = if true {
         (hw.ram_gb).round() as u32
     } else {
         0u32
