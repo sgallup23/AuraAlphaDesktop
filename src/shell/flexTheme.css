@@ -1,5 +1,10 @@
-/* Aura Alpha dark theme overrides for flexlayout-react */
+/* ═══════════════════════════════════════════════════════════════════
+   Aura Alpha — FlexLayout Dark Theme
+   Bloomberg Terminal aesthetic: deep blacks, crisp borders,
+   blue accents, glass-panel depth. JetBrains Mono for data.
+   ═══════════════════════════════════════════════════════════════════ */
 
+/* ── Core Variables ─────────────────────────────────────────────── */
 .flexlayout__layout {
   --color-text: #E6EDF3;
   --color-background: #0D1117;
@@ -10,14 +15,14 @@
   --color-4: #484F58;
   --color-5: #8B949E;
   --color-6: #E6EDF3;
-  --color-drag1: rgba(88, 166, 255, 0.15);
-  --color-drag2: rgba(88, 166, 255, 0.3);
-  --color-drag1-background: rgba(88, 166, 255, 0.06);
-  --color-drag2-background: rgba(88, 166, 255, 0.12);
+  --color-drag1: rgba(88, 166, 255, 0.2);
+  --color-drag2: rgba(88, 166, 255, 0.4);
+  --color-drag1-background: rgba(88, 166, 255, 0.08);
+  --color-drag2-background: rgba(88, 166, 255, 0.15);
   --color-tabset-background: #161B22;
   --color-tabset-header-background: #0D1117;
   --color-tabset-divider-line: #30363D;
-  --color-tab-selected: #58A6FF;
+  --color-tab-selected: #E6EDF3;
   --color-tab-selected-background: #1C2128;
   --color-tab-unselected: #8B949E;
   --color-tab-unselected-background: transparent;
@@ -25,61 +30,272 @@
   --color-tab-textbox-background: #0D1117;
   --color-border-background: #161B22;
   --color-border-divider-line: #30363D;
-  --color-splitter: #30363D;
+  --color-splitter: #21262D;
   --color-splitter-hover: #58A6FF;
   --color-splitter-drag: #58A6FF;
   --color-popup-background: #161B22;
   --color-popup-border: #30363D;
   --color-edge-marker: #58A6FF;
-  --font-size: 13px;
+  --font-size: 12px;
   --font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background: #0D1117;
 }
 
+/* ── Tab Strip (header bar with tab buttons) ────────────────────── */
+.flexlayout__tabset {
+  background: #0D1117;
+  border: 1px solid #21262D;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.flexlayout__tabset_header {
+  background: #161B22;
+  border-bottom: 1px solid #21262D;
+  padding: 0 4px;
+  min-height: 34px;
+}
+
+.flexlayout__tabset_tabbar_outer {
+  background: #161B22;
+  border-bottom: 1px solid #21262D;
+}
+
+.flexlayout__tabset_tabbar_inner {
+  padding: 2px 4px;
+}
+
+/* ── Individual Tab Buttons ─────────────────────────────────────── */
+.flexlayout__tab_button {
+  padding: 4px 14px;
+  margin: 2px 1px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #8B949E;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  letter-spacing: 0.01em;
+}
+
+.flexlayout__tab_button:hover {
+  color: #E6EDF3;
+  background: rgba(88, 166, 255, 0.06);
+  border-color: #30363D;
+}
+
+.flexlayout__tab_button--selected {
+  color: #E6EDF3;
+  background: #1C2128;
+  border-color: #30363D;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Active tab blue accent line */
+.flexlayout__tab_button--selected::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  background: #58A6FF;
+  border-radius: 2px 2px 0 0;
+}
+
+/* Tab close button */
+.flexlayout__tab_button_trailing {
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  border-radius: 4px;
+  color: #484F58;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.flexlayout__tab_button_trailing:hover {
+  color: #F85149;
+  background: rgba(248, 81, 73, 0.1);
+}
+
+/* ── Tab Content Area ───────────────────────────────────────────── */
 .flexlayout__tab {
   background: #0D1117;
   overflow: auto;
 }
 
-.flexlayout__tabset-selected {
-  background: #161B22;
-}
-
-.flexlayout__tab_button--selected {
-  background: #1C2128;
-  color: #E6EDF3;
-}
-
-.flexlayout__tab_button:hover {
-  background: #1C2128;
-}
-
-.flexlayout__tab_button_trailing {
-  color: #8B949E;
-}
-
-.flexlayout__tab_button_trailing:hover {
-  color: #F85149;
-}
-
+/* ── Splitters (resize handles between panels) ──────────────────── */
 .flexlayout__splitter {
-  background: #30363D;
+  background: #21262D;
+  z-index: 10;
 }
 
 .flexlayout__splitter:hover {
   background: #58A6FF;
+  transition: background 0.2s ease;
 }
 
-.flexlayout__tabset_header {
-  background: #0D1117;
-  border-bottom: 1px solid #30363D;
+.flexlayout__splitter_drag {
+  background: #58A6FF;
+  box-shadow: 0 0 8px rgba(88, 166, 255, 0.3);
+}
+
+/* Horizontal splitter (vertical line) */
+.flexlayout__splitter_vert {
+  width: 4px;
+  cursor: col-resize;
+}
+
+/* Vertical splitter (horizontal line) */
+.flexlayout__splitter_horz {
+  height: 4px;
+  cursor: row-resize;
+}
+
+/* ── Maximize Button ────────────────────────────────────────────── */
+.flexlayout__tab_toolbar_button {
+  color: #484F58;
+  border-radius: 4px;
+  padding: 2px;
+  transition: all 0.15s ease;
+}
+
+.flexlayout__tab_toolbar_button:hover {
+  color: #E6EDF3;
+  background: rgba(88, 166, 255, 0.1);
+}
+
+/* ── Overflow Menu ──────────────────────────────────────────────── */
+.flexlayout__tab_toolbar_button-overflow {
+  color: #8B949E;
+}
+
+.flexlayout__popup_menu {
+  background: #161B22;
+  border: 1px solid #30363D;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+}
+
+.flexlayout__popup_menu_item {
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #E6EDF3;
+}
+
+.flexlayout__popup_menu_item:hover {
+  background: rgba(88, 166, 255, 0.1);
+}
+
+/* ── Drag Indicators ────────────────────────────────────────────── */
+.flexlayout__outline_rect {
+  border: 2px solid #58A6FF;
+  border-radius: 8px;
+  background: rgba(88, 166, 255, 0.08);
+}
+
+.flexlayout__edge_rect {
+  background: rgba(88, 166, 255, 0.15);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  border-radius: 4px;
+}
+
+/* ── Border Panels (collapsed side panels) ──────────────────────── */
+.flexlayout__border_top,
+.flexlayout__border_bottom,
+.flexlayout__border_left,
+.flexlayout__border_right {
+  background: #161B22;
+  border-color: #21262D;
+}
+
+.flexlayout__border_button {
+  color: #8B949E;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 4px;
 }
 
 .flexlayout__border_button--selected {
   color: #58A6FF;
+  background: #1C2128;
 }
 
-/* Panel content area */
+.flexlayout__border_button:hover {
+  color: #E6EDF3;
+  background: rgba(88, 166, 255, 0.06);
+}
+
+/* ── Floating Windows ───────────────────────────────────────────── */
+.flexlayout__floating_window {
+  border: 1px solid #30363D;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+/* ── Panel Content Wrapper ──────────────────────────────────────── */
 .panel-content {
   padding: 12px;
   color: #E6EDF3;
+  height: 100%;
+  overflow: auto;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
 }
+
+/* Data values use monospace */
+.panel-content .font-mono {
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+}
+
+/* Glass panel effect inside panels */
+.panel-content .glass-panel {
+  background: #161B22;
+  border: 1px solid #21262D;
+  border-radius: 8px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* ── Scrollbars (inside panels) ─────────────────────────────────── */
+.flexlayout__tab::-webkit-scrollbar,
+.panel-content::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.flexlayout__tab::-webkit-scrollbar-track,
+.panel-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.flexlayout__tab::-webkit-scrollbar-thumb,
+.panel-content::-webkit-scrollbar-thumb {
+  background: #30363D;
+  border-radius: 3px;
+}
+
+.flexlayout__tab::-webkit-scrollbar-thumb:hover,
+.panel-content::-webkit-scrollbar-thumb:hover {
+  background: #484F58;
+}
+
+/* ── Status Colors (used by panels) ─────────────────────────────── */
+.text-aura-green { color: #3FB950; }
+.text-aura-red { color: #F85149; }
+.text-aura-blue { color: #58A6FF; }
+.text-aura-amber { color: #D29922; }
+.text-aura-purple { color: #BC8CFF; }
+.text-aura-muted { color: #8B949E; }
+.text-aura-text { color: #E6EDF3; }
+.bg-aura-bg { background: #0D1117; }
+.bg-aura-surface { background: #161B22; }
+.bg-aura-surface2 { background: #1C2128; }
+.border-aura-border { border-color: #30363D; }
