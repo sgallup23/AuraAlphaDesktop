@@ -64,6 +64,7 @@ async fn resolve_token(coordinator_url: &str, telemetry_consented: bool) -> Resu
     info!("grid_worker: no token found — auto-provisioning with coordinator");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .user_agent("Mozilla/5.0 (compatible; AuraAlpha-Desktop/5.0)")
         .build()
         .map_err(|e| format!("HTTP client build error: {e}"))?;
 
@@ -128,7 +129,7 @@ async fn resolve_token(coordinator_url: &str, telemetry_consented: bool) -> Resu
 fn build_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .user_agent("AuraAlpha-Desktop/5.0")
+        .user_agent("Mozilla/5.0 (compatible; AuraAlpha-Desktop/5.0)")
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))
 }

@@ -70,7 +70,7 @@ async fn do_request(
     // 0T: Use CARGO_PKG_VERSION instead of hardcoded version string
     req = req.header(
         "User-Agent",
-        format!("AuraAlpha-Desktop/{}", env!("CARGO_PKG_VERSION")),
+        format!("Mozilla/5.0 (compatible; AuraAlpha-Desktop/{})", env!("CARGO_PKG_VERSION")),
     );
     req = req.header("Accept", "application/json");
 

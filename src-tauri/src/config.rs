@@ -175,6 +175,7 @@ pub async fn fetch_from_server() -> Result<AppConfig, String> {
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
+        .user_agent("Mozilla/5.0 (compatible; AuraAlpha-Desktop/config)")
         .build()
         .map_err(|e| format!("config: could not build HTTP client: {e}"))?;
 

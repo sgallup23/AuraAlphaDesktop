@@ -204,7 +204,7 @@ def _auto_provision(base_url: str) -> dict:
 
     req = urllib.request.Request(
         url, data=body, method="POST",
-        headers={"Content-Type": "application/json", "User-Agent": "AuraAlpha-GridWorker/2.0"},
+        headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (compatible; AuraAlpha-GridWorker/2.0)"},
     )
     try:
         ctx = ssl.create_default_context()
@@ -319,7 +319,7 @@ class CoordinatorClient:
         self.worker_id = worker_id
         self.headers = {
             "Content-Type": "application/json",
-            "User-Agent": "AuraAlpha-GridWorker/2.0",
+            "User-Agent": "Mozilla/5.0 (compatible; AuraAlpha-GridWorker/2.0)",
             "X-Worker-Token": self.token,
             "X-Contributor-Token": self.token,
             "X-Worker-Id": self.worker_id,
