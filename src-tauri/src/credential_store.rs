@@ -301,9 +301,18 @@ fn keyring_delete(username: &str) -> Result<(), String> {
 // from a machine-specific fingerprint (hostname + username + machine-id).
 
 mod encrypted_fallback {
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+    use aes_gcm::aead::Aead;
+    use rand::RngCore;
     use sha2::{Sha256, Digest};
     use std::collections::HashMap;
     use std::path::PathBuf;
+
+    /// AES-256-GCM nonce size: 12 bytes
+    const NONCE_SIZE: usize = 12;
+
+    /// Magic prefix to identify AES-GCM encrypted data (vs legacy XOR)
+    const AES_GCM_MAGIC: &[u8; 4] = b"AG01";
 
     /// Derive a 32-byte encryption key from machine-specific data.
     /// This is NOT a substitute for a proper keychain — it protects against
@@ -338,10 +347,50 @@ mod encrypted_fallback {
             .unwrap_or_else(|_| "unknown".to_string())
     }
 
-    /// XOR-based encryption with SHA-256 key stream.
-    /// Not AES, but sufficient for a fallback on headless Linux where the
-    /// alternative was plaintext JSON. The key never leaves the machine.
-    fn xor_encrypt(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
+    /// AES-256-GCM encryption. Generates a random 12-byte nonce and prepends
+    /// a 4-byte magic header + the nonce to the ciphertext.
+    /// Output format: [AG01 (4 bytes)][nonce (12 bytes)][ciphertext+tag]
+    fn aes_gcm_encrypt(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| format!("AES-GCM key init error: {}", e))?;
+
+        let mut nonce_bytes = [0u8; NONCE_SIZE];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let ciphertext = cipher.encrypt(nonce, data)
+            .map_err(|e| format!("AES-GCM encrypt error: {}", e))?;
+
+        let mut output = Vec::with_capacity(AES_GCM_MAGIC.len() + NONCE_SIZE + ciphertext.len());
+        output.extend_from_slice(AES_GCM_MAGIC);
+        output.extend_from_slice(&nonce_bytes);
+        output.extend_from_slice(&ciphertext);
+        Ok(output)
+    }
+
+    /// AES-256-GCM decryption. Expects the format produced by aes_gcm_encrypt.
+    fn aes_gcm_decrypt(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+        let min_len = AES_GCM_MAGIC.len() + NONCE_SIZE + 16; // 16 = GCM tag
+        if data.len() < min_len {
+            return Err("Data too short for AES-GCM".to_string());
+        }
+        if &data[..4] != AES_GCM_MAGIC {
+            return Err("Missing AES-GCM magic header".to_string());
+        }
+
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| format!("AES-GCM key init error: {}", e))?;
+
+        let nonce = Nonce::from_slice(&data[4..4 + NONCE_SIZE]);
+        let ciphertext = &data[4 + NONCE_SIZE..];
+
+        cipher.decrypt(nonce, ciphertext)
+            .map_err(|e| format!("AES-GCM decrypt error: {}", e))
+    }
+
+    /// Legacy XOR decryption for backward compatibility with existing stored
+    /// credentials. Will be attempted if AES-GCM decryption fails.
+    fn xor_decrypt_legacy(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
         let mut result = Vec::with_capacity(data.len());
         for (i, byte) in data.iter().enumerate() {
             result.push(byte ^ key[i % 32]);
@@ -366,12 +415,33 @@ mod encrypted_fallback {
             Err(_) => return HashMap::new(),
         };
         let key = derive_machine_key();
-        let decrypted = xor_encrypt(&encrypted, &key);
+
+        // Try AES-GCM first (new format)
+        if encrypted.len() >= 4 && &encrypted[..4] == AES_GCM_MAGIC {
+            if let Ok(decrypted) = aes_gcm_decrypt(&encrypted, &key) {
+                if let Ok(json_str) = String::from_utf8(decrypted) {
+                    if let Ok(store) = serde_json::from_str::<HashMap<String, HashMap<String, String>>>(&json_str) {
+                        return store;
+                    }
+                }
+            }
+        }
+
+        // Fall back to legacy XOR decryption for existing stored credentials
+        let decrypted = xor_decrypt_legacy(&encrypted, &key);
         let json_str = match String::from_utf8(decrypted) {
             Ok(s) => s,
             Err(_) => return HashMap::new(),
         };
-        serde_json::from_str(&json_str).unwrap_or_default()
+        match serde_json::from_str::<HashMap<String, HashMap<String, String>>>(&json_str) {
+            Ok(store) => {
+                // Re-encrypt with AES-GCM for future reads
+                log::info!("Migrating credential store from XOR to AES-256-GCM");
+                let _ = save_store(&store);
+                store
+            }
+            Err(_) => HashMap::new(),
+        }
     }
 
     pub fn save_store(store: &HashMap<String, HashMap<String, String>>) -> Result<(), String> {
@@ -382,7 +452,7 @@ mod encrypted_fallback {
         }
         let json = serde_json::to_string(store).map_err(|e| e.to_string())?;
         let key = derive_machine_key();
-        let encrypted = xor_encrypt(json.as_bytes(), &key);
+        let encrypted = aes_gcm_encrypt(json.as_bytes(), &key)?;
 
         // Atomic write: write to temp file then rename
         let tmp_path = path.with_extension("enc.tmp");
