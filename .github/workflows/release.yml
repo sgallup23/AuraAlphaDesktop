@@ -69,12 +69,19 @@ jobs:
           WIN_CRED: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
           WIN_TOTP: ${{ secrets.SSLCOM_TOTP_SECRET }}
 
-      # ── Windows code signing: install CodeSignTool ──
+      # ── Windows code signing: install Java + CodeSignTool ──
+      - name: Set up Java (Windows signing)
+        if: matrix.platform == 'windows-latest' && steps.signing.outputs.has_windows_cert == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
       - name: Install CodeSignTool (Windows)
         if: matrix.platform == 'windows-latest' && steps.signing.outputs.has_windows_cert == 'true'
         shell: pwsh
         run: |
-          # Download CodeSignTool from SSL.com GitHub releases (stable URL)
+          # Download CodeSignTool from SSL.com
           $cstUrl = "https://github.com/nicnocquee/codesigntool-cli/releases/download/v1.0.0/CodeSignTool-v1.3.0-windows.zip"
           try {
             Invoke-WebRequest -Uri "https://www.ssl.com/download/codesigntool-for-windows/" -OutFile "CodeSignTool.zip" -MaximumRedirection 10 -UseBasicParsing
@@ -87,6 +94,8 @@ jobs:
             Invoke-WebRequest -Uri $cstUrl -OutFile "CodeSignTool.zip" -UseBasicParsing
           }
           Expand-Archive -Path "CodeSignTool.zip" -DestinationPath "$env:RUNNER_TEMP\cst" -Force
+          # List extracted contents for debugging
+          Get-ChildItem -Path "$env:RUNNER_TEMP\cst" -Recurse | Select-Object FullName | Out-String | Write-Output
           $cstBat = Get-ChildItem -Path "$env:RUNNER_TEMP\cst" -Recurse -Filter "CodeSignTool.bat" | Select-Object -First 1
           if (-not $cstBat) {
             Write-Warning "CodeSignTool.bat not found — signing will be skipped"
@@ -95,6 +104,8 @@ jobs:
             $cstDir = $cstBat.DirectoryName
             Write-Output "Found CodeSignTool at: $cstDir"
             "CST_DIR=$cstDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+            # Verify Java is available for CodeSignTool
+            try { java -version 2>&1 | Write-Output } catch { Write-Warning "Java not found" }
           }
 
       - name: Install npm dependencies
