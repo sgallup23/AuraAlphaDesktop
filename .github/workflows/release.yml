@@ -238,7 +238,9 @@ jobs:
           $msiFiles = Get-ChildItem -Path "src-tauri/target/release/bundle/msi/*.msi"
           foreach ($msi in $msiFiles) {
             Write-Output "Signing $($msi.FullName)..."
-            & cmd /c "`"$env:CST_DIR\CodeSignTool.bat`" sign -username=`"${{ secrets.SSLCOM_USERNAME }}`" -password=`"${{ secrets.SSLCOM_PASSWORD }}`" -credential_id=`"${{ secrets.SSLCOM_CREDENTIAL_ID }}`" -totp_secret=`"${{ secrets.SSLCOM_TOTP_SECRET }}`" -input_file_path=`"$($msi.FullName)`" -override=true"
+            Push-Location $env:CST_DIR
+            & cmd /c "CodeSignTool.bat sign -username=`"${{ secrets.SSLCOM_USERNAME }}`" -password=`"${{ secrets.SSLCOM_PASSWORD }}`" -credential_id=`"${{ secrets.SSLCOM_CREDENTIAL_ID }}`" -totp_secret=`"${{ secrets.SSLCOM_TOTP_SECRET }}`" -input_file_path=`"$($msi.FullName)`" -override=true"
+            Pop-Location
           }
 
       - name: Sign Windows NSIS installer
@@ -250,7 +252,9 @@ jobs:
           $exeFiles = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*.exe"
           foreach ($exe in $exeFiles) {
             Write-Output "Signing $($exe.FullName)..."
-            & cmd /c "`"$env:CST_DIR\CodeSignTool.bat`" sign -username=`"${{ secrets.SSLCOM_USERNAME }}`" -password=`"${{ secrets.SSLCOM_PASSWORD }}`" -credential_id=`"${{ secrets.SSLCOM_CREDENTIAL_ID }}`" -totp_secret=`"${{ secrets.SSLCOM_TOTP_SECRET }}`" -input_file_path=`"$($exe.FullName)`" -override=true"
+            Push-Location $env:CST_DIR
+            & cmd /c "CodeSignTool.bat sign -username=`"${{ secrets.SSLCOM_USERNAME }}`" -password=`"${{ secrets.SSLCOM_PASSWORD }}`" -credential_id=`"${{ secrets.SSLCOM_CREDENTIAL_ID }}`" -totp_secret=`"${{ secrets.SSLCOM_TOTP_SECRET }}`" -input_file_path=`"$($exe.FullName)`" -override=true"
+            Pop-Location
           }
 
       # ── Verify code signing on Windows installers (non-blocking) ──
