@@ -343,7 +343,13 @@ def main():
     parser.add_argument("--coordinator-url", default=DEFAULT_COORDINATOR)
     parser.add_argument("--max-parallel", type=int, default=4)
     parser.add_argument("--token", default=None)
+    parser.add_argument("--verbose", action="store_true", default=False,
+                        help="Enable verbose/debug logging")
     args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        log.setLevel(logging.DEBUG)
 
     # ── Resolve token + worker_id ────────────────────────────────
     token = None
