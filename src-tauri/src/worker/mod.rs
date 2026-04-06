@@ -13,6 +13,7 @@
 
 pub mod grid_worker;
 pub mod job_executor;
+pub mod redis_worker;
 
 use serde::Serialize;
 use std::sync::Arc;
