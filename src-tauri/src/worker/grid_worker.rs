@@ -385,9 +385,9 @@ async fn fail_job(
 fn compute_max_parallel() -> u32 {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get() as u32)
-        .unwrap_or(2);
-    // Use half the cores (each Python subprocess uses ~1 core), capped at 8
-    let parallel = (cores / 2).max(1).min(8);
+        .unwrap_or(4);
+    // Pure Rust compute — use most cores, leave 4 for OS/UI
+    let parallel = cores.saturating_sub(4).max(4);
     info!(
         "grid_worker: detected {cores} cores, max_parallel={parallel}"
     );
@@ -560,7 +560,7 @@ pub async fn run_worker(
         }
 
         // Dequeue a batch of jobs
-        let batch_size = available_slots.min(8); // Never request more than 8 at once
+        let batch_size = available_slots.min(50); // Bigger batches = fewer API round-trips
         match dequeue_jobs(&client, &coordinator_url, &token, &worker_id, batch_size).await {
             Ok(jobs) if !jobs.is_empty() => {
                 idle_backoff_secs = 2; // Reset backoff on successful dequeue

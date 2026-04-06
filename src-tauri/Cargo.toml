@@ -38,6 +38,7 @@ rayon = "1.10"
 polars = { version = "0.46", features = ["parquet", "csv", "lazy", "dtype-date", "dtype-datetime"] }
 smartcore = { version = "0.4", features = ["serde"] }
 bytemuck = { version = "1", features = ["derive"] }
+env_logger = "0.11"
 wgpu = { version = "29", default-features = false, features = ["wgsl", "vulkan", "dx12", "metal"], optional = true }
 
 [features]
