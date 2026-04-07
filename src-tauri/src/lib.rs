@@ -192,7 +192,7 @@ pub fn run() {
         .manage(LocalApiState {
             child: Mutex::new(None),
         })
-        .manage(config::AppConfigState::new(config::AppConfig::default()))
+        .manage(config::AppConfigState::new(config::load_cached()))
         .manage(worker::GridWorkerState::new())
         // ── IPC handler ──
         .invoke_handler(tauri::generate_handler![
@@ -368,24 +368,13 @@ pub fn run() {
                 });
             }
 
-            // ── Navigate WebView to auraalpha.cc (cloud-first) ──
-            // Bundled dist/ is the splash screen during the brief load delay.
-            // The web frontend IS the product — desktop wraps it with native
-            // features (tray, grid worker, credential store, auto-update).
-            {
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    // Brief delay for splash screen visibility
-                    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let url: tauri::Url = "https://auraalpha.cc"
-                            .parse()
-                            .expect("hardcoded URL");
-                        let _ = window.navigate(url);
-                        log::info!("Navigated WebView to auraalpha.cc");
-                    }
-                });
-            }
+            // ── Use bundled frontend (local-first) ──
+            // The bundled dist/ contains the full desktop React app with Tauri
+            // IPC support.  Navigating to auraalpha.cc broke IPC (remote origin
+            // cannot call invoke()) and caused the WebView to show the web
+            // version which lacks desktop features.  The bundled frontend
+            // already talks to the cloud API via fetch — no navigation needed.
+            log::info!("Using bundled frontend (local-first mode)");
 
             Ok(())
         })

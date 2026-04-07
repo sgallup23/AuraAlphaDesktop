@@ -10,8 +10,8 @@
 //! Use `compute_sma_auto` / `compute_ema_auto` for the adaptive path.
 
 /// Minimum data length to prefer GPU over CPU.
-/// Below this threshold, buffer upload/download overhead dominates.
-pub const GPU_THRESHOLD: usize = 1000;
+/// Lowered to 100 so grid jobs (~250 bars) use the GPU.
+pub const GPU_THRESHOLD: usize = 100;
 
 /// Compute Average True Range (ATR).
 ///

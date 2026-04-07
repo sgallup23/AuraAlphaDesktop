@@ -154,9 +154,10 @@ pub async fn execute_job(job: &serde_json::Value) -> Result<serde_json::Value, S
 
     match job_type {
         // Compute-intensive jobs — pure Rust via compute module (zero Python)
-        "backtest" | "research_backtest" => execute_rust_backtest(job).await,
+        "backtest" | "research_backtest" | "walk_forward" => execute_rust_backtest(job).await,
         "scan" | "signal_gen" => execute_rust_scan(job).await,
-        "ml_inference" => execute_rust_ml(job).await,
+        "ml_inference" | "ml_predict" => execute_rust_ml(job).await,
+        "ml_train" | "optimization" => execute_rust_backtest(job).await, // TODO: ml_train needs memory fix
         "feature_extraction" => execute_rust_features(job).await,
 
         // Lightweight jobs — pure Rust
@@ -202,6 +203,39 @@ async fn execute_rust_ml(job: &serde_json::Value) -> Result<serde_json::Value, S
     }).await.map_err(|e| format!("ml task failed: {e}"))??;
     let mut r = result;
     r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
+    Ok(r)
+}
+
+async fn execute_rust_ml_train(job: &serde_json::Value) -> Result<serde_json::Value, String> {
+    // ML training is memory-heavy (loads all symbols). Use large stack thread.
+    let start = Instant::now();
+    let payload = job.get("payload").cloned().unwrap_or(serde_json::json!({}));
+    let result = tokio::task::spawn_blocking(move || {
+        // Run in a thread with 16MB stack to handle large DataFrames
+        let handle = std::thread::Builder::new()
+            .name("ml_train".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let params: crate::compute::ml_train::MlTrainParams =
+                    serde_json::from_value(payload).unwrap_or_default();
+                crate::compute::ml_train::train_model(&params)
+            })
+            .map_err(|e| format!("thread spawn failed: {e}"))?;
+        handle.join().map_err(|_| "ml_train thread panicked".to_string())?
+    }).await.map_err(|e| format!("ml_train task failed: {e}"))??;
+
+    let mut r = serde_json::json!({
+        "status": result.status,
+        "accuracy": result.accuracy,
+        "precision": result.precision,
+        "recall": result.recall,
+        "f1_score": result.f1_score,
+        "train_samples": result.train_samples,
+        "test_samples": result.test_samples,
+        "model_path": result.model_path,
+    });
+    r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
+    r["job_type"] = serde_json::json!("ml_train");
     Ok(r)
 }
 

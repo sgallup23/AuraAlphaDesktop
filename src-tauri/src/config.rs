@@ -68,7 +68,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            api_base: "http://127.0.0.1:8020/api".into(),
+            api_base: "https://auraalpha.cc/api".into(),
             coordinator_url: "https://auraalpha.cc".into(),  // grid coordinator stays cloud
             update_endpoint: "https://auraalpha.cc/api/desktop/update".into(),  // updates from cloud
             worker_enabled: true,
