@@ -121,12 +121,13 @@ pub async fn run_redis_worker(
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
 
-            // Check channel capacity — don't overfill
-            let channel_space = job_tx.capacity() - job_tx.max_capacity() + job_tx.capacity();
+            // Check if workers have capacity for more jobs
             let current_flight = feeder_in_flight.load(Ordering::Relaxed) as u32;
             let available = max_parallel.saturating_sub(current_flight);
+            // channel capacity() returns REMAINING space (high = empty, low = full)
+            let channel_remaining = job_tx.capacity();
 
-            if available == 0 || job_tx.capacity() < (refill_threshold as usize) {
+            if available == 0 {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 continue;
             }

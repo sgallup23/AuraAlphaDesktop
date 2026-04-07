@@ -157,7 +157,7 @@ pub async fn execute_job(job: &serde_json::Value) -> Result<serde_json::Value, S
         "backtest" | "research_backtest" | "walk_forward" => execute_rust_backtest(job).await,
         "scan" | "signal_gen" => execute_rust_scan(job).await,
         "ml_inference" | "ml_predict" => execute_rust_ml(job).await,
-        "ml_train" | "optimization" => execute_rust_backtest(job).await, // TODO: ml_train needs memory fix
+        "ml_train" | "optimization" => execute_rust_ml_train(job).await,
         "feature_extraction" => execute_rust_features(job).await,
 
         // Lightweight jobs — pure Rust
@@ -206,15 +206,22 @@ async fn execute_rust_ml(job: &serde_json::Value) -> Result<serde_json::Value, S
     Ok(r)
 }
 
+/// Semaphore: max 2 concurrent ML training jobs (each uses ~2GB RAM + all CPU cores via Rayon)
+static ML_SEMAPHORE: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(2));
+
 async fn execute_rust_ml_train(job: &serde_json::Value) -> Result<serde_json::Value, String> {
-    // ML training is memory-heavy (loads all symbols). Use large stack thread.
+    // Acquire ML semaphore — blocks if 2 ML jobs already running
+    let _permit = ML_SEMAPHORE.acquire().await
+        .map_err(|_| "ML semaphore closed".to_string())?;
+
     let start = Instant::now();
     let payload = job.get("payload").cloned().unwrap_or(serde_json::json!({}));
     let result = tokio::task::spawn_blocking(move || {
-        // Run in a thread with 16MB stack to handle large DataFrames
+        // 32MB stack for Polars DataFrames + Rayon parallel processing
         let handle = std::thread::Builder::new()
             .name("ml_train".into())
-            .stack_size(16 * 1024 * 1024)
+            .stack_size(32 * 1024 * 1024)
             .spawn(move || {
                 let params: crate::compute::ml_train::MlTrainParams =
                     serde_json::from_value(payload).unwrap_or_default();
