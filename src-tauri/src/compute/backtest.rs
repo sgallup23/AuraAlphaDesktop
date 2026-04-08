@@ -333,6 +333,14 @@ fn build_indicators(bars: &OhlcvBars, params: &BacktestParams, entry_logic: &[St
 /// Port of `_simulate_trades` (compute_worker.py:312-470).
 /// Walks through bars, checks entry conditions, manages positions with
 /// ATR-based stops, trailing stop, and max hold days.
+///
+/// ## Performance optimizations over original
+/// - Pre-allocates trade Vec based on estimated trade frequency (~1 per 20 bars).
+/// - Caches direction equality check as a bool (`is_long`) outside the loop.
+/// - Exit reasons use `&'static str` — `String::from` only at push time.
+/// - ATR values indexed directly from pre-computed array (no per-bar recompute).
+/// - `bars.closes[i]`, `bars.highs[i]`, `bars.lows[i]` read once per bar
+///   into locals to reduce repeated bounds-checked indexing.
 fn simulate_trades(
     bars: &OhlcvBars,
     params: &BacktestParams,
@@ -353,6 +361,7 @@ fn simulate_trades(
         trail_pct /= 100.0;
     }
     let max_hold = params.max_hold_days;
+    let is_long = direction == "long";
 
     let actual_logic: Vec<String> = if entry_logic.is_empty() {
         vec![
@@ -401,7 +410,11 @@ fn simulate_trades(
         + 5;
     start_idx = start_idx.max(min_lookback);
 
-    let mut trades: Vec<Trade> = Vec::new();
+    // Pre-allocate trades with estimated capacity: ~1 trade per 20 bars in range.
+    let bar_range = end_idx.min(n).saturating_sub(start_idx);
+    let estimated_trades = (bar_range / 20).max(4);
+    let mut trades: Vec<Trade> = Vec::with_capacity(estimated_trades);
+
     let mut in_trade = false;
     let mut entry_price = 0.0_f64;
     let mut entry_idx = 0_usize;
@@ -410,84 +423,111 @@ fn simulate_trades(
     let mut trail_high = 0.0_f64;
     let mut trail_low = f64::INFINITY;
 
+    // Direct slice references for the hot loop — avoids repeated field access.
     let atr = &ind.atr;
+    let closes = &bars.closes;
+    let highs = &bars.highs;
+    let lows = &bars.lows;
+    let dates = &bars.dates;
 
-    for i in start_idx..end_idx.min(n) {
-        if atr[i].is_nan() {
+    // Pre-allocate the direction string once (used for every trade).
+    let direction_owned = direction.to_string();
+
+    let loop_end = end_idx.min(n);
+    for i in start_idx..loop_end {
+        // Load values once per bar to reduce bounds-checked indexing.
+        let atr_i = atr[i];
+        if atr_i.is_nan() {
             continue;
         }
 
+        let close_i = closes[i];
+        let high_i = highs[i];
+        let low_i = lows[i];
+
         if !in_trade {
             if check_entry(i, &actual_logic, &ind, params, direction) {
-                entry_price = bars.closes[i];
+                entry_price = close_i;
                 entry_idx = i;
-                if direction == "long" {
-                    stop_price = entry_price - atr[i] * stop_atr;
-                    tp_price = entry_price + atr[i] * tp_atr;
+                if is_long {
+                    stop_price = entry_price - atr_i * stop_atr;
+                    tp_price = entry_price + atr_i * tp_atr;
                     trail_high = entry_price;
                 } else {
-                    stop_price = entry_price + atr[i] * stop_atr;
-                    tp_price = entry_price - atr[i] * tp_atr;
+                    stop_price = entry_price + atr_i * stop_atr;
+                    tp_price = entry_price - atr_i * tp_atr;
                     trail_low = entry_price;
                 }
                 in_trade = true;
             }
         } else {
             let hold_days = i - entry_idx;
-            let mut exit_price: Option<f64> = None;
-            let mut exit_reason = "";
+            // exit_reason is a &'static str — zero allocation until trade push.
+            let mut exit_price_val = 0.0_f64;
+            let mut exit_reason: &'static str = "";
+            let mut should_exit = false;
 
-            if direction == "long" {
-                trail_high = trail_high.max(bars.highs[i]);
+            if is_long {
+                if high_i > trail_high { trail_high = high_i; }
                 let trail_stop = trail_high * (1.0 - trail_pct);
 
-                if bars.lows[i] <= stop_price {
-                    exit_price = Some(stop_price);
+                // Order: stop_loss most frequent exit, then take_profit,
+                // then trailing_stop, then max_hold (rarest).
+                if low_i <= stop_price {
+                    exit_price_val = stop_price;
                     exit_reason = "stop_loss";
-                } else if bars.highs[i] >= tp_price {
-                    exit_price = Some(tp_price);
+                    should_exit = true;
+                } else if high_i >= tp_price {
+                    exit_price_val = tp_price;
                     exit_reason = "take_profit";
-                } else if bars.closes[i] <= trail_stop && hold_days > 1 {
-                    exit_price = Some(trail_stop);
+                    should_exit = true;
+                } else if close_i <= trail_stop && hold_days > 1 {
+                    exit_price_val = trail_stop;
                     exit_reason = "trailing_stop";
+                    should_exit = true;
                 } else if hold_days >= max_hold {
-                    exit_price = Some(bars.closes[i]);
+                    exit_price_val = close_i;
                     exit_reason = "max_hold";
+                    should_exit = true;
                 }
             } else {
-                trail_low = trail_low.min(bars.lows[i]);
+                if low_i < trail_low { trail_low = low_i; }
                 let trail_stop = trail_low * (1.0 + trail_pct);
 
-                if bars.highs[i] >= stop_price {
-                    exit_price = Some(stop_price);
+                if high_i >= stop_price {
+                    exit_price_val = stop_price;
                     exit_reason = "stop_loss";
-                } else if bars.lows[i] <= tp_price {
-                    exit_price = Some(tp_price);
+                    should_exit = true;
+                } else if low_i <= tp_price {
+                    exit_price_val = tp_price;
                     exit_reason = "take_profit";
-                } else if bars.closes[i] >= trail_stop && hold_days > 1 {
-                    exit_price = Some(trail_stop);
+                    should_exit = true;
+                } else if close_i >= trail_stop && hold_days > 1 {
+                    exit_price_val = trail_stop;
                     exit_reason = "trailing_stop";
+                    should_exit = true;
                 } else if hold_days >= max_hold {
-                    exit_price = Some(bars.closes[i]);
+                    exit_price_val = close_i;
                     exit_reason = "max_hold";
+                    should_exit = true;
                 }
             }
 
-            if let Some(ep) = exit_price {
-                let pnl_pct = if direction == "long" {
-                    (ep - entry_price) / entry_price
+            if should_exit {
+                let pnl_pct = if is_long {
+                    (exit_price_val - entry_price) / entry_price
                 } else {
-                    (entry_price - ep) / entry_price
+                    (entry_price - exit_price_val) / entry_price
                 };
                 trades.push(Trade {
-                    entry_date: bars.dates[entry_idx].clone(),
-                    exit_date: bars.dates[i].clone(),
+                    entry_date: dates[entry_idx].clone(),
+                    exit_date: dates[i].clone(),
                     entry_price: round4(entry_price),
-                    exit_price: round4(ep),
+                    exit_price: round4(exit_price_val),
                     pnl_pct: round6(pnl_pct),
                     hold_days: hold_days as f64,
                     exit_reason: exit_reason.to_string(),
-                    direction: direction.to_string(),
+                    direction: direction_owned.clone(),
                 });
                 in_trade = false;
             }
@@ -497,21 +537,221 @@ fn simulate_trades(
     // Close any open position at window end.
     if in_trade && end_idx > entry_idx {
         let final_idx = (end_idx - 1).min(n - 1);
-        let ep = bars.closes[final_idx];
-        let pnl_pct = if direction == "long" {
+        let ep = closes[final_idx];
+        let pnl_pct = if is_long {
             (ep - entry_price) / entry_price
         } else {
             (entry_price - ep) / entry_price
         };
         trades.push(Trade {
-            entry_date: bars.dates[entry_idx].clone(),
-            exit_date: bars.dates[final_idx].clone(),
+            entry_date: dates[entry_idx].clone(),
+            exit_date: dates[final_idx].clone(),
             entry_price: round4(entry_price),
             exit_price: round4(ep),
             pnl_pct: round6(pnl_pct),
             hold_days: (final_idx - entry_idx) as f64,
             exit_reason: "window_end".to_string(),
-            direction: direction.to_string(),
+            direction: direction_owned,
+        });
+    }
+
+    trades
+}
+
+/// Simulate trades using a pre-computed indicator set (shared via Arc).
+///
+/// Used by parameter sweep to avoid recomputing indicators for each param combo
+/// when only thresholds change (not indicator periods).
+fn simulate_trades_with_indicators(
+    bars: &OhlcvBars,
+    params: &BacktestParams,
+    direction: &str,
+    date_start: &str,
+    date_end: &str,
+    entry_logic: &[String],
+    ind: &IndicatorSet,
+) -> Vec<Trade> {
+    let n = bars.len();
+    if n < 50 {
+        return Vec::new();
+    }
+
+    let stop_atr = params.stop_loss_atr_mult;
+    let tp_atr = params.take_profit_atr_mult;
+    let mut trail_pct = params.trailing_stop_pct;
+    if trail_pct > 1.0 {
+        trail_pct /= 100.0;
+    }
+    let max_hold = params.max_hold_days;
+    let is_long = direction == "long";
+
+    // Date range filtering.
+    let mut start_idx: usize = 0;
+    let mut end_idx: usize = n;
+
+    if !date_start.is_empty() {
+        for (i, d) in bars.dates.iter().enumerate() {
+            if d.as_str() >= date_start {
+                start_idx = i;
+                break;
+            }
+        }
+    }
+    if !date_end.is_empty() {
+        for i in (0..n).rev() {
+            if bars.dates[i].as_str() <= date_end {
+                end_idx = i + 1;
+                break;
+            }
+        }
+    }
+
+    let min_lookback = *[
+        params.ema_slow,
+        params.atr_period,
+        params.rsi_period,
+        params.volume_sma_period,
+        params.bbands_period,
+    ]
+    .iter()
+    .max()
+    .unwrap_or(&0)
+        + 5;
+    start_idx = start_idx.max(min_lookback);
+
+    let bar_range = end_idx.min(n).saturating_sub(start_idx);
+    let estimated_trades = (bar_range / 20).max(4);
+    let mut trades: Vec<Trade> = Vec::with_capacity(estimated_trades);
+
+    let mut in_trade = false;
+    let mut entry_price = 0.0_f64;
+    let mut entry_idx = 0_usize;
+    let mut stop_price = 0.0_f64;
+    let mut tp_price = 0.0_f64;
+    let mut trail_high = 0.0_f64;
+    let mut trail_low = f64::INFINITY;
+
+    let atr = &ind.atr;
+    let closes = &bars.closes;
+    let highs = &bars.highs;
+    let lows = &bars.lows;
+    let dates = &bars.dates;
+    let direction_owned = direction.to_string();
+
+    let loop_end = end_idx.min(n);
+    for i in start_idx..loop_end {
+        let atr_i = atr[i];
+        if atr_i.is_nan() {
+            continue;
+        }
+
+        let close_i = closes[i];
+        let high_i = highs[i];
+        let low_i = lows[i];
+
+        if !in_trade {
+            if check_entry(i, entry_logic, ind, params, direction) {
+                entry_price = close_i;
+                entry_idx = i;
+                if is_long {
+                    stop_price = entry_price - atr_i * stop_atr;
+                    tp_price = entry_price + atr_i * tp_atr;
+                    trail_high = entry_price;
+                } else {
+                    stop_price = entry_price + atr_i * stop_atr;
+                    tp_price = entry_price - atr_i * tp_atr;
+                    trail_low = entry_price;
+                }
+                in_trade = true;
+            }
+        } else {
+            let hold_days = i - entry_idx;
+            let mut exit_price_val = 0.0_f64;
+            let mut exit_reason: &'static str = "";
+            let mut should_exit = false;
+
+            if is_long {
+                if high_i > trail_high { trail_high = high_i; }
+                let trail_stop = trail_high * (1.0 - trail_pct);
+
+                if low_i <= stop_price {
+                    exit_price_val = stop_price;
+                    exit_reason = "stop_loss";
+                    should_exit = true;
+                } else if high_i >= tp_price {
+                    exit_price_val = tp_price;
+                    exit_reason = "take_profit";
+                    should_exit = true;
+                } else if close_i <= trail_stop && hold_days > 1 {
+                    exit_price_val = trail_stop;
+                    exit_reason = "trailing_stop";
+                    should_exit = true;
+                } else if hold_days >= max_hold {
+                    exit_price_val = close_i;
+                    exit_reason = "max_hold";
+                    should_exit = true;
+                }
+            } else {
+                if low_i < trail_low { trail_low = low_i; }
+                let trail_stop = trail_low * (1.0 + trail_pct);
+
+                if high_i >= stop_price {
+                    exit_price_val = stop_price;
+                    exit_reason = "stop_loss";
+                    should_exit = true;
+                } else if low_i <= tp_price {
+                    exit_price_val = tp_price;
+                    exit_reason = "take_profit";
+                    should_exit = true;
+                } else if close_i >= trail_stop && hold_days > 1 {
+                    exit_price_val = trail_stop;
+                    exit_reason = "trailing_stop";
+                    should_exit = true;
+                } else if hold_days >= max_hold {
+                    exit_price_val = close_i;
+                    exit_reason = "max_hold";
+                    should_exit = true;
+                }
+            }
+
+            if should_exit {
+                let pnl_pct = if is_long {
+                    (exit_price_val - entry_price) / entry_price
+                } else {
+                    (entry_price - exit_price_val) / entry_price
+                };
+                trades.push(Trade {
+                    entry_date: dates[entry_idx].clone(),
+                    exit_date: dates[i].clone(),
+                    entry_price: round4(entry_price),
+                    exit_price: round4(exit_price_val),
+                    pnl_pct: round6(pnl_pct),
+                    hold_days: hold_days as f64,
+                    exit_reason: exit_reason.to_string(),
+                    direction: direction_owned.clone(),
+                });
+                in_trade = false;
+            }
+        }
+    }
+
+    if in_trade && end_idx > entry_idx {
+        let final_idx = (end_idx - 1).min(n - 1);
+        let ep = closes[final_idx];
+        let pnl_pct = if is_long {
+            (ep - entry_price) / entry_price
+        } else {
+            (entry_price - ep) / entry_price
+        };
+        trades.push(Trade {
+            entry_date: dates[entry_idx].clone(),
+            exit_date: dates[final_idx].clone(),
+            entry_price: round4(entry_price),
+            exit_price: round4(ep),
+            pnl_pct: round6(pnl_pct),
+            hold_days: (final_idx - entry_idx) as f64,
+            exit_reason: "window_end".to_string(),
+            direction: direction_owned,
         });
     }
 

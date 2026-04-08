@@ -1,452 +1,327 @@
-# Aura Alpha Desktop -- Coordination Report
+# Aura Alpha Desktop — Production Coordination
 
-Last updated: 2026-04-08
-Repo: github.com/sgallup23/AuraAlphaDesktop (branch: master)
-Identifier: cc.auraalpha.desktop
-
----
-
-## Desktop App Status
-
-| Field | Value |
-|---|---|
-| Version | 7.4.0 |
-| Framework | Tauri v2 (Rust + Webview) |
-| Bundle targets | Windows (NSIS/WiX), macOS (DMG/app), Linux (deb/AppImage) |
-| Frontend | React 19.2 + Vite 7.3 + TailwindCSS 3.4 |
-| Bundle format | Single-file HTML (vite-plugin-singlefile) |
-| Built bundle size | 783 KB (dist/index.html), ~224 KB gzip |
-| Module count | 489 (Vite build) |
-| Rust edition | 2021 |
-| Minimum macOS | 10.15 |
-
-### Codebase Size
-
-| Layer | Files | Lines |
-|---|---|---|
-| Rust backend (compute + worker + app) | 31 .rs files | ~11,988 |
-| Frontend (JSX + JS + CSS) | 57 files | ~7,626 |
-| **Total** | 88 source files | **~19,614** |
-
-### Rust Module Inventory (src-tauri/src/)
-
-**Compute engine** (src-tauri/src/compute/):
-
-| Module | Lines | Purpose |
-|---|---|---|
-| gpu.rs | 1,138 | wgpu GPU compute (SMA, EMA, Batch SMA shaders) |
-| backtest.rs | 819 | Full backtest engine, 25+ entry conditions, ATR exits |
-| ml_train.rs | 794 | smartcore RandomForest training, walk-forward CV |
-| cache.rs | 386 | Offline data cache, seeding, eviction |
-| types.rs | 357 | All shared data types and IPC structs |
-| indicators.rs | 332 | RSI, EMA, ATR, SMA, Bollinger, OBV |
-| demo.rs | 312 | Demo/test data generation |
-| hardware.rs | 290 | CPU/RAM/GPU detection (cross-platform) |
-| scanner.rs | 289 | Signal scanner (momentum, reversal, breakout, volume) |
-| ml.rs | 204 | ML ensemble inference |
-| metrics.rs | 198 | Sharpe, Sortino, profit factor, drawdown |
-| features.rs | 188 | Technical feature extraction for ML pipeline |
-| data.rs | 185 | OHLCV data loading from Parquet/CSV |
-| gpu_stub.rs | 90 | No-op GPU stub when `gpu` feature is off |
-| mod.rs | 55 | Module declarations and re-exports |
-
-**Grid worker** (src-tauri/src/worker/):
-
-| Module | Lines | Purpose |
-|---|---|---|
-| grid_worker.rs | 708 | HTTP-based grid worker loop |
-| redis_worker.rs | 489 | Redis ZPOPMIN feeder/worker/reporter architecture |
-| job_executor.rs | 410 | Job dispatch to Rust compute, per-job timeouts |
-| mod.rs | 185 | IPC commands: start/stop/status |
-
-**Application layer** (src-tauri/src/):
-
-| Module | Lines | Purpose |
-|---|---|---|
-| startup.rs | 1,035 | App initialization, data seeding, migration |
-| credential_store.rs | 619 | AES-256-GCM credential encryption |
-| lib.rs | 401 | Tauri command registration, plugin setup |
-| config.rs | 279 | AppConfig, managed state |
-| tray.rs | 278 | System tray icon and menu |
-| auth.rs | 245 | JWT authentication, token refresh |
-| bot_manager.rs | 217 | Bot lifecycle management |
-| local_bots.rs | 210 | Local bot execution |
-| preferences.rs | 159 | User preferences persistence |
-| background.rs | 146 | Background polling tasks |
-| safe_io.rs | 146 | Atomic file writes |
-| api_proxy.rs | 105 | API proxy for Cloudflare bypass |
-| telemetry_consent.rs | 97 | GDPR-compliant telemetry opt-in |
-| updater.rs | 64 | Auto-update check logic |
-| crash_reporter.rs | 50 | Crash dump collection |
-| main.rs | 6 | Entry point |
-
-### Frontend Structure (src/)
-
-| Area | Key Files |
-|---|---|
-| Routing | App.jsx (258 lines) -- phase-based: startup -> login/explorer -> workspace |
-| Docking | flexlayout-react, WorkspaceShell.jsx, panelRegistry.js, defaultLayout.js |
-| Pages | LoginPage, StartupPage, ExplorerPage (536 lines, largest component) |
-| Panels (17) | BotManager, PortfolioBrain, GridCompute, Regime, BotCommand, Positions, Watchlist, Chart, Scanner, Alerts, StrategyManager, BrokerSetup, Backtest, Settings, IntelligenceDashboard, MetaAllocator, StrategyRouting |
-| Hooks (12) | useAlerts, useBacktests, useBrokerSetup, useChartData, useLiveBots, useLocalBots, usePositions, useScanners, useStrategies, useStrategyRouting, useVisibility, useWatchlists |
-| Contexts | AuthContext, ConfigContext, PreferencesContext |
-| Charting | lightweight-charts v5.1 |
-| Animation | framer-motion v12.35 |
+Cross-agent coordination document for the Aura Alpha Desktop application.
+Last updated: 2026-04-08.
 
 ---
 
-## Compute Engine Architecture
+## Current State
 
-### CPU: rayon Parallelism
+- **Repo**: github.com/sgallup23/AuraAlphaDesktop (master branch)
+- **Tauri source version**: v7.4.0 (Cargo.toml + tauri.conf.json + package.json all aligned)
+- **Installed Electron app**: v8.2.0 (separate codebase, installed on Shane's desktop)
+- **Important**: The INSTALLED desktop app is Electron. This repo contains the Tauri rewrite.
+- **Electron app.asar was hot-patched** on Shane's desktop (API_BASE fix, loadURL fix, API proxy simplification)
+- **Identifier**: `cc.auraalpha.desktop`
+- **Bundle targets**: Windows (NSIS + WiX), macOS (universal binary, min 10.15), Linux (deb + AppImage)
+- **Auto-updater**: configured via Tauri plugin-updater, endpoint at `auraalpha.cc/api/desktop/update/`
 
-rayon is used in 6 compute modules for multi-symbol parallel processing:
+---
 
-| Module | Usage |
-|---|---|
-| backtest.rs | `par_iter()` over symbols for parallel backtest execution |
-| features.rs | `par_iter()` over symbols for parallel feature extraction |
-| indicators.rs | `into_par_iter()` for parallel ATR True Range computation |
-| ml.rs | `par_iter()` over symbols for parallel ML inference |
-| ml_train.rs | `par_iter()` for training sample extraction + walk-forward folds |
-| scanner.rs | `par_iter()` over symbols for parallel signal scanning |
+## Compute Engine (Rust — src-tauri/src/compute/)
 
-rayon uses all available CPU cores by default (work-stealing thread pool). The `PAR_WINDOW_THRESHOLD` constant (500) prevents rayon overhead for small datasets where sequential execution is faster.
+Pure Rust computation engine. Zero Python dependencies. ~7,600 lines across 15 modules.
 
-### GPU: wgpu Compute Shaders
+| Module          | Lines | Purpose |
+|-----------------|------:|---------|
+| `gpu.rs`        | 1,725 | GPU-accelerated compute via wgpu (Vulkan/Metal/DX12). 7 WGSL shaders. |
+| `ml_train.rs`   | 1,206 | Local ML training via smartcore Random Forest. Walk-forward CV. Zero Python. |
+| `backtest.rs`   |   819 | Full backtest engine with 25+ entry conditions, ATR-based exits. |
+| `cache.rs`      |   587 | Offline data cache manager (seed, stats, download, eviction). |
+| `data.rs`       |   556 | OHLCV data loading from Parquet/CSV via Polars. |
+| `indicators.rs` |   490 | RSI, EMA, ATR, SMA, Bollinger Bands, OBV. Auto-routes to GPU when available. |
+| `types.rs`      |   357 | All shared data types (BacktestResult, ScanSignal, OhlcvBars, etc). |
+| `scanner.rs`    |   316 | Signal scanner (momentum, reversal, breakout, volume). |
+| `demo.rs`       |   312 | Demo/test data generation. |
+| `hardware.rs`   |   290 | CPU/RAM/GPU detection (cross-platform). |
+| `metrics.rs`    |   238 | Sharpe, Sortino, profit factor, max drawdown. |
+| `ml.rs`         |   204 | Hand-coded ML ensemble inference. Batched DenseMatrix prediction. |
+| `features.rs`   |   143 | Technical feature extraction for ML pipeline (10 features per symbol). |
+| `gpu_stub.rs`   |   118 | No-op GPU stub when `gpu` feature is off. |
+| `mod.rs`        |    55 | Module declarations and re-exports. |
 
-Built behind the `gpu` Cargo feature flag (off by default). When enabled, compiles against wgpu v29 with Vulkan, DX12, and Metal backends.
+---
 
-**Shaders (WGSL):**
+## GPU Shaders (wgpu — WGSL)
 
-| Shader | Workgroup Size | Design |
-|---|---|---|
-| SMA | 256 | Each thread computes one output element. Parallelism = ceil(N/256) workgroups. |
-| EMA | 1 | Inherently sequential (each value depends on previous). Single workgroup, serial on GPU. Useful when part of a larger batch pipeline to avoid CPU-GPU context switches. |
-| Batch SMA | 256 | Multi-symbol: each workgroup Y-axis = symbol, X-axis = data point. One GPU dispatch for all symbols. |
+All shaders are WGSL compute shaders using `@workgroup_size(256)`. They operate on `f32` arrays (WGSL does not support f64 without extensions; f32 precision is sufficient for price data with ~7 significant digits).
 
-**GPU/CPU selection:**
+| Shader Constant      | Line | Purpose |
+|-----------------------|-----:|---------|
+| `SHADER_SMA`         |   25 | Simple Moving Average — sums window, divides by period. |
+| `SHADER_EMA`         |   68 | Exponential Moving Average — recursive smoothing. |
+| `SHADER_RSI`         |  123 | Relative Strength Index — gain/loss separation, ratio. |
+| `SHADER_ATR`         |  190 | Average True Range — true range calculation + smoothing. |
+| `SHADER_BATCH_RSI`   |  258 | Batch RSI — processes multiple symbols in one GPU dispatch. |
+| `SHADER_BATCH_ATR`   |  333 | Batch ATR — processes multiple symbols in one GPU dispatch. |
+| `SHADER_BATCH_SMA`   |  412 | Batch SMA — processes multiple symbols in one GPU dispatch. |
 
-- `GPU_THRESHOLD`: 100 bars (lowered from 1000 to catch grid jobs with ~250 bars)
-- `compute_sma_auto()` / `compute_ema_auto()` check threshold + adapter availability
-- Falls back to CPU transparently if no GPU or below threshold
-- f32 on GPU (WGSL limitation), f64 on CPU; precision loss ~1e-7, acceptable for financial indicators
-- GpuContext is initialized once (lazy `OnceCell`) and cached for the process lifetime
-- `is_gpu_available()` uses a synchronous `OnceLock` for fast repeated checks after first probe
-- Benchmark IPC command available: `gpu_benchmark` compares GPU vs CPU timing
+- **Threshold**: Auto-routes to GPU when data exceeds `GPU_THRESHOLD = 100` bars (defined in `indicators.rs`).
+- **Fallback**: CPU path is always available. When GPU feature is disabled or no adapter found, all functions gracefully fall back.
+- **GPU feature**: Opt-in via `--features gpu` in Cargo build. Default build is CPU-only.
+- **Backends**: Vulkan (Linux/Windows), DX12 (Windows), Metal (macOS). No CUDA dependency.
+- **GpuContext**: Initialized once (lazy via `OnceLock`/`OnceCell`), cached for process lifetime.
+- **Indicators auto-routing**: `compute_sma_auto()`, `compute_ema_auto()`, `compute_rsi_auto()`, `compute_atr_auto()` all check `GPU_THRESHOLD` + `is_gpu_available()` before dispatching.
 
-### ML: smartcore RandomForest
+---
 
-- Zero Python dependencies -- pure Rust ML
-- `RandomForestClassifier` from smartcore v0.4
-- 10 features: RSI14, EMA9, EMA21, ATR14, BB width, returns (1d/5d/20d), volume ratio, close
-- Labels: binary (profitable = return > 0 over 5-day forward window)
-- Model serialized to `~/.aura-worker/models/rf_model.json`
-- In-memory model cache (OnceLock) avoids repeated disk IO
-- Batched prediction via single DenseMatrix call
-- Walk-forward cross-validation with parallel folds (rayon)
-- Feature normalization with cached scaler parameters
-- ML train semaphore: max 2 concurrent training jobs (prevent OOM)
-- 32 MB stack threads for training (large matrices)
+## Worker Architecture
 
-### Data: Polars + Parquet/CSV
+Worker modules live in `src-tauri/src/worker/` (~2,063 lines across 4 files).
 
-- Polars v0.46 with `parquet`, `csv`, `lazy` features
-- OHLCV data loaded from `~/.aura-worker/data/{region}/` directory
-- Parquet preferred, CSV fallback
-- Cache manager handles: seeding from bundled sample data, downloading from API, stale eviction
-- Bundled sample data: `resources/sample_data/*.csv` copied on first launch
+| Module             | Lines | Purpose |
+|--------------------|------:|---------|
+| `grid_worker.rs`   |   757 | Main worker loop: authenticate, dequeue, execute, heartbeat (30s). |
+| `job_executor.rs`  |   617 | Job dispatch — routes job types to Rust compute engine functions. |
+| `redis_worker.rs`  |   504 | Redis-backed dispatch queue (feeder/worker/reporter architecture). |
+| `mod.rs`           |   185 | IPC commands: `start_grid_worker`, `stop_grid_worker`, `grid_worker_status`. Managed state via Tokio Mutex/RwLock/Notify. |
+
+### Grid Worker (Rust — Tauri)
+- Redis dispatch: dequeue jobs via ZPOPMIN from Redis sorted set, execute via Rust compute engine, report results via POST batch endpoint.
+- Tokio-based: async runtime, graceful shutdown via `tokio::sync::Notify`.
+- Heartbeat every 30 seconds — extends Redis lease TTL for in-flight jobs.
+- Hardware-aware concurrency: reads CPU/RAM from `hardware` module.
+- Fallback: if Redis is unavailable, falls back to HTTP API dequeue (`/api/grid/dequeue`).
+- Result batching: reporter sends results in batches of 50 via `/api/grid/complete-batch`.
+
+### Electron Worker (Python — Legacy)
+- `worker.py` + `compute_worker.py` in resources directory.
+- Coordinator API: polls for jobs, executes via Python, reports results.
+- Dependencies: numpy, polars, psutil, requests, pyyaml.
+- Used by the installed Electron v8.2.0 app on Shane's desktop.
+
+### Job Types
+
+| Job Type             | Executor | Timeout | Notes |
+|----------------------|----------|--------:|-------|
+| `backtest`           | Rust compute (rayon parallel over symbols) | 300s | 25+ entry conditions, ATR exits |
+| `scan`               | Rust compute (rayon parallel over symbols) | 300s | Momentum, reversal, breakout, volume |
+| `feature_extraction` | Rust compute (rayon parallel) | 300s | 10 technical features per symbol |
+| `ml_train`           | Rust compute (smartcore RF) | 600s | Max 2 concurrent (semaphore), 32 MB stack |
+| `ml_inference`       | Rust compute (cached model) | 300s | Batched DenseMatrix prediction |
+| `health_check`       | Pure Rust (no subprocess) | N/A | Lightweight |
+| `ping`               | Pure Rust (no subprocess) | N/A | Lightweight |
 
 ---
 
 ## Optimizations Applied (2026-04-08)
 
-Commit `c68268d` -- 6 parallel optimization agents, 35 files changed, +532/-261 lines.
+### Round 1 — Frontend
 
-### 1. Visibility-Based Polling Pause
+1. **Visibility-based polling pause** — `useVisibility()` hook. Applied to 4 polling hooks (`useAlerts`, `useLiveBots`, `usePositions`, `useLocalBots`). Zero network requests when tab is hidden.
+2. **Console cleanup** — 33 console statements across 18 files gated behind `import.meta.env.DEV`. Terser `drop_console: true` strips any remaining in production.
+3. **Lazy loading** — 4 pages (`LoginPage`, `StartupPage`, `ExplorerPage`, `WorkspaceShell`) + all 17 panels via `React.lazy()`. Shimmer `PanelLoader.jsx` as Suspense fallback.
+4. **Cargo deps trimmed** — tokio reduced to 6 features, GPU default off, polars features minimized.
+5. **React memoization** — 8 components: `ExplorerPage`, `BotActivityFeed`, `CommandPalette`, `DataTable`, `PortfolioBrainPanel`, `RegimePanel`, `GridComputePanel`, `PositionsPanel`. Uses `React.memo`, `useMemo`, `useCallback`.
+6. **Vite terser + CSP tightened** — 2-pass terser compression, `drop_console`/`drop_debugger`, dead code elimination. CSP: removed `unsafe-eval` from `script-src`.
 
-**Hook**: `useVisibility()` (11 lines) -- listens to `document.visibilitychange`
+### Round 2 — Intelligence Engine
 
-**Applied to 4 polling hooks:**
-- `useAlerts.js` -- alert polling pauses when tab hidden
-- `useLiveBots.js` -- bot status polling pauses when tab hidden
-- `usePositions.js` -- position polling pauses when tab hidden
-- `useLocalBots.js` -- local bot polling pauses when tab hidden
+7. **GPU shaders expanded** — RSI, ATR, Batch SMA, Batch RSI, Batch ATR shaders added (7 total, up from 3).
+8. **Rayon parallelism** — Applied across 6 compute modules: `backtest`, `features`, `indicators`, `ml`, `ml_train`, `scanner`. Work-stealing across all cores.
+9. **Worker throughput** — Hardware-aware concurrency, batch job fetching from Redis, result batching (50 per POST).
+10. **ML pipeline** — Flat `Vec<f64>` matrices for cache-friendly layout, parallel walk-forward folds, scaler parameter caching.
+11. **Data pipeline** — Concurrent downloads via tokio, LRU cache (`lru` crate), incremental updates (skip unchanged symbols).
 
-**Impact**: Zero network requests and zero React re-renders when the app window is minimized or in background. Resumes instantly on focus.
+### Round 3 — Deep Optimization (in progress)
 
-### 2. Console Cleanup
+12. **Backtest engine** — Parameter sweep parallelism via rayon, indicator pre-computation to avoid redundant calculation.
+13. **Scanner** — Batch GPU dispatch for multi-symbol scans, early termination on low confidence signals.
+14. **Build profile** — `opt-level=3`, `target-cpu=native`, fat LTO, PGO instructions documented in Cargo.toml.
+15. **Feature extraction** — SIMD-friendly contiguous memory layout, loop fusion across indicator computations.
+16. **Electron main.js** — Simplified API proxy (removed dead routes), worker reliability improvements.
 
-33 `console.log`/`console.warn`/`console.error` statements across 18 files gated behind `import.meta.env.DEV`. In production builds, these are dead code eliminated by Vite. Additionally, Terser's `drop_console: true` strips any that slip through.
+---
 
-### 3. Lazy Loading
+## Build Profile (Cargo)
 
-**Page-level** (App.jsx):
-- `LoginPage` -- lazy loaded
-- `StartupPage` -- lazy loaded
-- `ExplorerPage` -- lazy loaded
-- `WorkspaceShell` -- lazy loaded
-
-**Panel-level** (panelRegistry.js) -- all 17 panels are `React.lazy()`:
-BotCommandPanel, PositionsPanel, WatchlistPanel, ChartPanel, ScannerPanel, AlertsPanel, StrategyManagerPanel, BrokerSetupPanel, BotManagerPanel, BacktestPanel, SettingsPanel, IntelligenceDashboardPanel, RegimePanel, PortfolioBrainPanel, MetaAllocatorPanel, GridComputePanel, StrategyRoutingPanel
-
-**Skeleton**: `PanelLoader.jsx` (44 lines) provides a shimmer placeholder during chunk load, used as `Suspense` fallback for every panel.
-
-### 4. Cargo Optimization
-
-**tokio**: Reduced from full feature set to 6 specific features:
-```
-["rt-multi-thread", "sync", "time", "macros", "process", "signal"]
-```
-Removed: `io-util`, `io-std`, `net`, `fs` (not used in this codebase).
-
-**GPU**: Changed from `default = ["gpu"]` to `default = []`. GPU is now opt-in via `--features gpu`. Eliminates wgpu compile time and binary size for standard builds.
-
-**Release profile**:
 ```toml
 [profile.release]
-opt-level = "z"      # optimize for size
-lto = true           # link-time optimization
-codegen-units = 1    # single codegen unit for better optimization
-strip = true         # strip debug symbols
-panic = "abort"      # smaller binary, no unwinding
+opt-level = 3        # maximum speed
+lto = "fat"          # full cross-crate LTO: dead code elimination across all crates
+codegen-units = 1    # single codegen unit: better inlining + optimization at cost of compile time
+strip = true         # strip debug symbols from binary
+panic = "abort"      # no unwind tables: smaller binary + faster panics
+
+[profile.dev]
+opt-level = 1        # slightly optimized dev builds so rayon/polars aren't painfully slow
 ```
 
-### 5. React Memoization
+PGO (Profile-Guided Optimization) steps documented in Cargo.toml:
+1. Build instrumented: `RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" cargo build --release`
+2. Run representative workload (backtest 200 symbols, full scan, ML inference).
+3. Merge profiles: `llvm-profdata merge -o /tmp/pgo-data/merged.profdata /tmp/pgo-data`
+4. Build optimized: `RUSTFLAGS="-Cprofile-use=/tmp/pgo-data/merged.profdata" cargo build --release`
 
-8 components received `React.memo`, `useMemo`, and/or `useCallback`:
-
-| Component | Optimizations |
-|---|---|
-| ExplorerPage | `memo()` wrapper, `MetricCard` memo, `SymbolRow` memo, `SymbolRowWrapper` memo, `useCallback` on toggle/demo |
-| BotActivityFeed | `memo()` wrapper, `TradeRow` memo, `useMemo` for filters + filtered data, `useCallback` on fetchTrades |
-| CommandPalette | `useMemo` for filtered, grouped, flatItems; `useCallback` on executeCommand, handleKeyDown |
-| DataTable | Component-level optimization |
-| PortfolioBrainPanel | Memoized render sections |
-| RegimePanel | Memoized computation |
-| GridComputePanel | Memoized state derivations |
-| PositionsPanel | Memoized data handling |
-
-### 6. Vite + CSP
-
-**Vite build** (vite.config.js):
-- Minifier: terser (2-pass compression, dead code elimination)
-- `drop_console: true` + `drop_debugger: true`
-- `dead_code: true` + `unused: true`
-- Comments stripped
-- Single-file output via vite-plugin-singlefile (all assets inlined)
-- Target: chrome105 (Windows), safari13 (macOS)
-
-**CSP** (tauri.conf.json):
-- Removed `unsafe-eval` from script-src (confirmed zero eval usage in codebase)
-- Final CSP: `default-src 'self' https://auraalpha.cc https://*.auraalpha.cc; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.auraalpha.cc wss://*.auraalpha.cc; img-src 'self' https: data:; font-src 'self' data:`
+PGO typically yields 10-20% additional speedup on hot paths (indicator loops, backtest sim).
 
 ---
 
-## Electron v8.2.0 Hotfixes
+## Electron Hot-Patches Applied (Shane's Desktop)
 
-The Electron wrapper is a separate installation (NOT in this repo -- no main.js, preload.js, or Electron deps in package.json). The Tauri source in this repo is the primary build target. Electron was used as a quick-ship wrapper around the web frontend.
+These changes were applied directly to the installed Electron v8.2.0 `app.asar`:
 
-Known fixes applied to the Electron build (external):
-- `API_BASE_DIRECT` pointed to a dead EC2 IP address; fixed to `https://auraalpha.cc`
-- `loadURL` was loading `/index.html` directly; fixed to `/` so React Router handles routing (prevented 404 on refresh)
-
-**Current state**: Tauri v7.4.0 is the canonical desktop app. Electron wrapper exists for legacy compatibility but is not built from this repo.
-
----
-
-## Intelligence Processing Pipeline
-
-### Grid Worker Architecture
-
-```
-EC2 API (coordinator)
-    |
-    v
-Redis sorted set (priority queue)
-    |
-    v  ZPOPMIN
-Feeder (async Tokio task)
-    |
-    v  mpsc channel
-Worker Pool (spawn_blocking, rayon + wgpu)
-    |
-    v  results mpsc
-Reporter (async Tokio task)
-    |
-    v  POST /api/grid/complete-batch (batches of 50)
-EC2 API (result storage)
-```
-
-**Heartbeat**: Extends Redis lease TTL every 30 seconds for in-flight jobs.
-**Fallback**: If Redis is unavailable, falls back to HTTP API dequeue (`/api/grid/dequeue`).
-
-### Job Types
-
-| Job Type | Executor | Timeout | Notes |
-|---|---|---|---|
-| backtest | Rust compute (rayon parallel over symbols) | 300s | 25+ entry conditions, ATR exits |
-| scan | Rust compute (rayon parallel over symbols) | 300s | Momentum, reversal, breakout, volume |
-| feature_extraction | Rust compute (rayon parallel) | 300s | 10 technical features per symbol |
-| ml_train | Rust compute (smartcore RF) | 600s | Max 2 concurrent (semaphore), 32 MB stack |
-| ml_inference | Rust compute (cached model) | 300s | Batched DenseMatrix prediction |
-| health_check | Pure Rust (no subprocess) | N/A | Lightweight |
-| ping | Pure Rust (no subprocess) | N/A | Lightweight |
-
-### Current Bottlenecks
-
-1. **EMA on GPU**: Inherently sequential -- single workgroup. Only beneficial in batch pipeline context.
-2. **ML training memory**: 32 MB stack threads + semaphore (max 2) to prevent OOM on large datasets.
-3. **Data download**: Cache seeding from API is network-bound; Parquet preferred over CSV for read speed.
-4. **Single-threaded JSON serialization**: smartcore model serialize/deserialize is single-threaded.
+- `API_BASE_DIRECT` changed from `http://54.172.235.137:8020` to `https://auraalpha.cc`
+- `loadURL` changed from `aura://app/index.html` to `aura://app/`
+- API proxy simplified in `main.js` (removed dead routes)
+- `worker.py` + `compute_worker.py` copied to `resources/resources/grid_worker/`
+- Python deps installed on desktop: numpy, polars, psutil, requests, pyyaml
 
 ---
 
-## Hardware Utilization
+## Frontend Stack
 
-### CPU
+| Dependency             | Version  | Purpose |
+|------------------------|----------|---------|
+| React                  | 19.2.4   | UI framework |
+| react-router-dom       | 7.13.1   | Client-side routing |
+| flexlayout-react       | 0.8.19   | Dockable panel layout (replaced rc-dock at v7.0.0) |
+| lightweight-charts     | 5.1.0    | TradingView charting |
+| framer-motion          | 12.35.2  | Animations |
+| tailwindcss            | 3.4.19   | Utility CSS |
+| Vite                   | 7.3.1    | Build tool (dev server on port 1420) |
+| vite-plugin-singlefile | 2.3.2    | Bundle everything into one HTML file for Tauri |
+| terser                 | 5.46.1   | JS minification (2-pass, dead code elim) |
 
-- **rayon**: Work-stealing thread pool, defaults to all available cores
-- **tokio**: Multi-threaded runtime (`rt-multi-thread`), handles async IO, grid worker feeder/reporter, heartbeats
-- **spawn_blocking**: Compute-heavy jobs run via `tokio::task::spawn_blocking` to avoid blocking the async runtime
-- **PAR_WINDOW_THRESHOLD**: 500 -- prevents rayon overhead for small datasets
+Vite config: `viteSingleFile` plugin inlines all assets. Build target: Chrome 105 (Windows) / Safari 13 (macOS). All assets inlined (100 MB inline limit). Single chunk output (no code splitting — Tauri loads one file).
 
-### GPU
+---
 
-- **Detection**: Cross-platform via `sysinfo` + platform-specific probes
-  - Windows: `nvidia-smi` first, `wmic` fallback
-  - Linux/WSL: `nvidia-smi` first, `/proc/driver/nvidia/gpus` fallback
-  - macOS: `system_profiler SPDisplaysDataType`
-- **wgpu adapter**: Requests `HighPerformance` preference, supports Vulkan + DX12 + Metal
-- **Context**: `OnceLock<Option<GpuContext>>` -- initialized once, cached forever
-- **Pipelines**: 3 pre-compiled compute pipelines (SMA, EMA, Batch SMA)
-- **Buffer strategy**: input -> storage, output -> storage + copy_src, staging -> copy_dst + map_read
-- **Precision**: f32 on GPU (WGSL limitation), f64 on CPU; max error ~0.01 for values around 100-200
+## Tauri Plugins
 
-### Memory
+| Plugin                       | Purpose |
+|------------------------------|---------|
+| tauri-plugin-shell           | Spawn child processes (sidecars) |
+| tauri-plugin-notification    | Desktop notifications |
+| tauri-plugin-updater         | Auto-update from auraalpha.cc endpoint |
+| tauri-plugin-window-state    | Persist window size/position across sessions |
+| tauri-plugin-process         | Process info (PID, exit) |
+| tauri-plugin-opener          | Open URLs in default browser |
+| tauri-plugin-store           | Persistent key-value storage |
 
-- **Polars DataFrames**: Lazy evaluation where possible, eager only for final materialization
-- **ML model cache**: `OnceLock` -- model loaded once from disk, kept in memory
-- **GPU context cache**: `OnceCell` -- device + queue + pipelines kept for process lifetime
-- **Hardware info cache**: `OnceLock<GpuInfo>` -- detected once per process
-- **Data cache**: `~/.aura-worker/data/{region}/` on disk, loaded into memory per-job
-- **Feature matrix**: Flat `Vec<f64>` for cache-friendly contiguous layout
+---
+
+## Key Rust Dependencies
+
+| Crate     | Version | Purpose |
+|-----------|---------|---------|
+| tauri     | 2       | Desktop framework (tray-icon feature) |
+| tokio     | 1       | Async runtime (rt-multi-thread, sync, time, macros, process, signal) |
+| rayon     | 1.10    | Data-parallel CPU computation |
+| polars    | 0.46    | DataFrame engine (parquet, csv, lazy) |
+| smartcore | 0.4     | ML (Random Forest training/inference, serde) |
+| wgpu      | 29      | GPU compute (optional: wgsl, vulkan, dx12, metal) |
+| redis     | 0.27    | Job queue (tokio-comp) |
+| reqwest   | 0.12    | HTTP client (json, native-tls) |
+| aes-gcm   | 0.10    | AES-256-GCM credential encryption |
+| keyring   | 3       | OS keychain access |
+| sysinfo   | 0.32    | Hardware detection |
+| lru       | 0.12    | LRU cache for data pipeline |
+| bytemuck  | 1       | Safe transmute for GPU buffer uploads (derive) |
+| uuid      | 1       | UUID v4 generation for worker/job IDs |
+| chrono    | 0.4     | Date/time with serde |
 
 ---
 
 ## Production Recommendations
 
 ### Build Commands
-
-**Standard build (no GPU)**:
 ```bash
-npm run tauri:build
+# CPU-only (smaller binary, no GPU dependency)
+cargo build --release
+
+# GPU-enabled (Vulkan/DX12/Metal compute)
+cargo build --release --features gpu
+
+# Maximum SIMD on known hardware
+RUSTFLAGS="-C target-cpu=native" cargo build --release --features gpu
+
+# Full Tauri app bundle (platform-specific)
+npm run tauri:build                # auto-detect
+npm run tauri:build:windows        # x86_64-pc-windows-msvc
+npm run tauri:build:macos          # universal-apple-darwin
+npm run tauri:build:linux          # x86_64-unknown-linux-gnu
 ```
 
-**GPU-enabled build**:
-```bash
-cd src-tauri && cargo build --release --features gpu
-# Or via tauri CLI:
-TAURI_ARGS="--features gpu" npm run tauri:build
-```
+### Networking
+- EC2 port 8020 is NOT publicly accessible -- always use `https://auraalpha.cc` domain.
+- CSP restricts connections to `*.auraalpha.cc` and `wss://*.auraalpha.cc`.
+- Cloudflare sits in front -- User-Agent must be wrapped in Mozilla/5.0 to avoid bot detection.
 
-**Platform-specific**:
-```bash
-npm run tauri:build:windows   # x86_64-pc-windows-msvc
-npm run tauri:build:macos     # universal-apple-darwin
-npm run tauri:build:linux     # x86_64-unknown-linux-gnu
-```
-
-### GPU Feature Flag
-
-- `default = []` -- GPU is OFF by default to reduce compile time and binary size
-- Enable with `--features gpu` when building for machines with dedicated GPUs
-- The `gpu_stub.rs` module provides no-op implementations when the feature is off, so all code paths compile cleanly either way
-- At runtime, `is_gpu_available()` returns false when compiled without the feature
-- The frontend `gpu_compute_status` IPC command works in both modes
-
-### Recommended Hardware
-
-| Workload | CPU | RAM | GPU | Notes |
-|---|---|---|---|---|
-| Light (5-10 symbols, paper trading) | 4 cores | 8 GB | Not needed | Runs fine without GPU feature |
-| Standard (50-100 symbols, live trading) | 8 cores | 16 GB | Optional | rayon saturates 8 cores well |
-| Heavy (600 symbols, grid compute) | 16+ cores | 32 GB | Recommended | GPU for batch SMA across all symbols |
-| ML training (walk-forward CV) | 16+ cores | 32 GB | Optional | CPU-bound (smartcore), 32 MB stack threads |
-
-### Known Issues and TODOs
-
-1. **Auto-update server endpoint not built**: Tauri updater is configured with pubkey and endpoint URL (`/api/desktop/update/{target}/{arch}/{version}`) but the server-side endpoint does not exist yet.
-2. **Code signing**: SSL.com certificate is in validation. CI workflow has CodeSignTool wired but signing is not yet active for release builds.
-3. **GPU EMA performance**: The single-workgroup EMA shader is often slower than CPU for individual calls. Only beneficial in batch pipeline context. Consider removing standalone GPU EMA path.
-4. **Model serialization**: smartcore model JSON can be large. Consider bincode or MessagePack for faster serialize/deserialize.
-5. **Polars lazy not fully utilized**: Some compute paths use eager mode. Audit for lazy evaluation opportunities.
-6. **Telemetry consent**: Dialog exists but telemetry collection backend is not implemented.
-7. **Offline-first**: Cache seeding works for sample data but full offline mode (no API dependency) is not complete.
+### Worker Deployment
+- Electron needs `worker.py` bundled in `resources/resources/grid_worker/`.
+- Tauri bundles sidecar and resources via `tauri.conf.json` bundle.resources (`sidecar/**/*`, `resources/**/*`).
+- Redis worker requires Redis connection string in app config.
 
 ---
 
-## Coordination Notes
+## Known Issues
 
-### Cross-Session / Cross-Agent Rules
+1. **Electron v8.2.0 and Tauri v7.4.0 are separate codebases** -- the installed app (Electron) and this repo (Tauri) need reconciliation. The Electron app was hot-patched manually.
+2. **GPU feature is opt-in** (`--features gpu`) -- default build is CPU-only. Must explicitly enable for GPU-accelerated indicators.
+3. **Python 3.14 on Shane's desktop** may have compatibility issues with some packages (numpy, polars wheels for 3.14 are bleeding-edge).
+4. **Auto-updater endpoint** (`/api/desktop/update/{target}/{arch}/{current_version}`) is configured but the server-side handler has not been built yet.
+5. **Code signing**: SSL.com certificate integrated in CI (GitHub Actions CodeSignTool), validation still in progress.
+6. **Singlefile build**: `vite-plugin-singlefile` inlines everything into one HTML -- very large apps may hit memory limits on low-end devices.
+7. **GPU EMA performance**: The single-workgroup EMA shader is often slower than CPU for individual calls. Only beneficial in batch pipeline context.
+8. **Telemetry consent**: Dialog exists (`telemetry_consent.rs`, 97 lines) but telemetry collection backend is not implemented.
 
-- This file (`cooperative.md`) is the single source of truth for desktop app state.
-- Any agent modifying the desktop app MUST update this file with what changed.
-- Check git log before starting work -- another agent may have pushed.
-- Never run `git add -A` -- use specific file paths.
-- Test builds locally before pushing to CI (20-minute build cycles are expensive).
+---
 
-### Repository
-
-- **GitHub**: github.com/sgallup23/AuraAlphaDesktop
-- **Branch**: master (single branch workflow)
-- **Remote**: origin (fetch + push)
-- **CI**: GitHub Actions -- builds Windows/macOS/Linux on v* tags
-
-### Architecture Relationship
+## Architecture Relationships
 
 - **This repo** (AuraAlphaDesktop): Tauri v2, Rust compute engine, React frontend. Canonical desktop app.
 - **AuraCommandV2** (separate repo): Web frontend (Vite + React). Shares no code with desktop.
 - **Electron wrapper** (not in this repo): Legacy quick-ship wrapper. Uses the web build, not this codebase.
-- **prodesk** (separate repo): FastAPI backend, 3 trading bots, backtests. Desktop connects to this API.
+- **prodesk** (separate repo): FastAPI backend, 3 trading bots (SHAWN/SHANE/Nova), backtests. Desktop connects to this API via `https://auraalpha.cc`.
 
-### Key Dependencies (Cargo)
+---
 
-| Crate | Version | Purpose |
-|---|---|---|
-| tauri | 2 | Desktop framework |
-| tokio | 1 | Async runtime (6 features) |
-| rayon | 1.10 | CPU parallelism |
-| polars | 0.46 | DataFrames (parquet, csv, lazy) |
-| smartcore | 0.4 | ML (RandomForest) |
-| wgpu | 29 | GPU compute (optional) |
-| reqwest | 0.12 | HTTP client (json, native-tls) |
-| redis | 0.27 | Grid worker dispatch |
-| sysinfo | 0.32 | Hardware detection |
-| aes-gcm | 0.10 | Credential encryption |
-| keyring | 3 | OS keychain integration |
-| flexlayout-react | 0.8 | Docking layout (frontend) |
+## GitHub
 
-### Recent Commit History (last 20)
+- **Repo**: github.com/sgallup23/AuraAlphaDesktop
+- **Branch**: master (single branch workflow)
+- **Last push**: 2026-04-08 (intelligence engine optimization)
+- **CI**: GitHub Actions -- builds Windows/macOS/Linux on `v*` tags
+- **Code signing**: SSL.com CodeSignTool integrated in Windows CI workflow
+
+### Recent Commit History (last 25)
 
 ```
-c68268d perf: full desktop optimization (polling, memo, lazy, Cargo, Vite, CSP)
-851ab02 fix: ML train semaphore (max 2 concurrent) + 32MB stack + feeder capacity
+f4d481d perf: intelligence engine optimization — GPU shaders, rayon parallelism, worker throughput, ML pipeline, data cache
+c68268d perf: full desktop optimization — polling, memoization, lazy loading, Cargo, Vite, CSP
+851ab02 fix: ML train semaphore (max 2 concurrent) + 32MB stack threads + feeder capacity fix
 fa9f3d6 feat: wire ml_train + walk_forward + GPU threshold 100
-7986438 release: v7.4.0 -- Redis dispatch queue + headless grid worker
-6cbcca2 feat: Redis-backed grid worker -- feeder/worker/reporter architecture
-77d7972 feat: headless Rust grid worker -- pure compute, no GTK/Tauri UI
-104a7cf fix: Cloudflare bot protection -- wrap User-Agent in Mozilla/5.0
+7986438 release: v7.4.0 — Redis dispatch queue + headless grid worker
+6cbcca2 feat: Redis-backed grid worker — feeder/worker/reporter architecture
+77d7972 feat: headless Rust grid worker — pure compute, no GTK/Tauri UI
+104a7cf fix: Cloudflare bot protection — wrap User-Agent in Mozilla/5.0
 7a69c93 security: replace XOR fallback with AES-256-GCM for credential encryption
 d7c3691 security: remove shell:allow-execute + add CSP to webview
-f55d7c8 chore: mark as deprecated -- consolidated into AuraCommandV2
-9075d00 release: v7.3.0 -- bump version for strategy routing release
-231881a feat: v7.3.0 -- strategy routing panel + execution wiring
+f55d7c8 chore: mark as deprecated — consolidated into AuraCommandV2
+9075d00 release: v7.3.0 — bump version for strategy routing release
+231881a feat: v7.3.0 — strategy routing panel + execution wiring
 449d71f fix: use official SSLcom CodeSignTool v1.3.2 + java -jar directly
 daea707 fix: call CodeSignTool jar directly via Java, bypass bat file
 d8142c4 fix: use env vars for CodeSignTool to avoid quoting issues
 6a4e0d2 fix: cd into CodeSignTool dir before signing (path resolution)
 b0047be fix: add Java setup for Windows code signing in CI
 774e8dc fix: replace grep -P with sed for Windows CI compat
-5ac50b5 fix: v7.2.1 -- grid worker sidecar crash on --verbose flag
-1e47880 fix: v7.2.0 -- always send real hostname and hardware in grid worker
+5ac50b5 fix: v7.2.1 — grid worker sidecar crash on --verbose flag
+1e47880 fix: v7.2.0 — always send real hostname and hardware in grid worker
+002070b release: v7.1.0 — WebView to auraalpha.cc with cloud-first connection
+96659f8 style: proper Aura Alpha dark theme for flexlayout panels
+4a508f8 release: v7.0.0 — replace rc-dock with flexlayout-react
+ce6d4d2 release: v6.3.2 — fix workspace layout crash (remove group field, add groups prop)
 ```
+
+---
+
+## Coordination Rules
+
+- This file (`cooperative.md`) is the coordination reference for desktop app state.
+- Any agent modifying the desktop app should update this file with what changed.
+- Check git log before starting work -- another agent may have pushed.
+- Never run `git add -A` -- use specific file paths.
+- Test builds locally before pushing to CI (20-minute build cycles are expensive).
+- Do not deploy Aura to EC2 during trading hours (9:30 AM - 4:00 PM ET).

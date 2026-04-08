@@ -50,6 +50,9 @@ pub use types::{
 // Re-export ML helpers for use by scanner/backtest modules.
 pub use ml_train::{extract_latest_features, predict_single};
 
+// Re-export feature matrix extraction for Rust callers (ML, scanner).
+pub use features::{extract_feature_matrix, execute_feature_extraction_matrix};
+
 // Re-export IPC commands for registration in lib.rs.
 pub use backtest::run_local_backtest;
 pub use cache::{clear_data_cache, download_batch, ensure_local_data, get_cache_status};
