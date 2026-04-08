@@ -41,7 +41,7 @@ export default function useScanners() {
       const data = await api(`/scanners/${key}`, { silent: true });
       setResults(normalizeResults(data));
     } catch (e) {
-      console.warn('[useScanners]', e);
+      if (import.meta.env.DEV) console.warn('[useScanners]', e);
     } finally {
       setLoading(false);
     }

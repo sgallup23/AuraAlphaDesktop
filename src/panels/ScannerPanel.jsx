@@ -1,3 +1,4 @@
+import { memo, useCallback } from 'react';
 import useScanners from '../hooks/useScanners';
 import DataTable from '../components/DataTable';
 import { formatPercent, pnlColor } from '../utils/formatters';
@@ -20,20 +21,25 @@ const COLUMNS = [
   },
 ];
 
-export default function ScannerPanel() {
+const SCANNER_DEFAULT_SORT = { key: 'strength', dir: 'desc' };
+
+function ScannerPanel() {
   const { presets, selectedPreset, setSelectedPreset, results, loading, runScan } = useScanners();
+
+  const handlePresetChange = useCallback((e) => setSelectedPreset(e.target.value), [setSelectedPreset]);
+  const handleScan = useCallback(() => runScan(), [runScan]);
 
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
         <select
           value={selectedPreset}
-          onChange={(e) => setSelectedPreset(e.target.value)}
+          onChange={handlePresetChange}
           className="flex-1 text-xs bg-aura-surface2 border border-aura-border rounded px-2 py-1.5 text-aura-text outline-none"
         >
           {presets.map(p => <option key={p.key || p.name} value={p.key || p.name}>{p.name || p.key}</option>)}
         </select>
-        <button onClick={() => runScan()} disabled={loading} className="btn-primary text-xs py-1">
+        <button onClick={handleScan} disabled={loading} className="btn-primary text-xs py-1">
           {loading ? 'Scanning...' : 'Scan'}
         </button>
       </div>
@@ -43,9 +49,11 @@ export default function ScannerPanel() {
       <DataTable
         columns={COLUMNS}
         data={results}
-        defaultSort={{ key: 'strength', dir: 'desc' }}
+        defaultSort={SCANNER_DEFAULT_SORT}
         emptyText={loading ? 'Scanning...' : 'No results'}
       />
     </div>
   );
 }
+
+export default memo(ScannerPanel);

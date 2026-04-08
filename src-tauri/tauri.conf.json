@@ -32,7 +32,7 @@
       "tooltip": "Aura Alpha"
     },
     "security": {
-      "csp": "default-src 'self' https://auraalpha.cc https://*.auraalpha.cc; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.auraalpha.cc wss://*.auraalpha.cc; img-src 'self' https: data:; font-src 'self' data:"
+      "csp": "default-src 'self' https://auraalpha.cc https://*.auraalpha.cc; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.auraalpha.cc wss://*.auraalpha.cc; img-src 'self' https: data:; font-src 'self' data:"
     }
   },
   "bundle": {

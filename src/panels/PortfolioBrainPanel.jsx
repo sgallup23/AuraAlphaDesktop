@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { createChart } from 'lightweight-charts';
 import { api } from '../utils/api';
 import MetricTile from '../components/MetricTile';
@@ -6,6 +6,7 @@ import DataTable from '../components/DataTable';
 import { formatCurrency, formatPnl, pnlColor } from '../utils/formatters';
 
 const BOT_COLORS = { SHAWN: '#22d3ee', SHANE: '#a78bfa', NOVA: '#f59e0b' };
+const PNL_DESC_SORT = { key: 'pnl', dir: 'desc' };
 
 const POSITION_COLUMNS = [
   {
@@ -58,7 +59,7 @@ function normalizeSector(data) {
   return [];
 }
 
-export default function PortfolioBrainPanel() {
+function PortfolioBrainPanel() {
   const [overview, setOverview] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -121,7 +122,7 @@ export default function PortfolioBrainPanel() {
         seriesRef.current = null;
       };
     } catch (err) {
-      console.error('Exposure chart init failed:', err);
+      if (import.meta.env.DEV) console.error('Exposure chart init failed:', err);
     }
   }, []);
 
@@ -167,7 +168,7 @@ export default function PortfolioBrainPanel() {
         }
       }
     } catch (e) {
-      console.warn('[PortfolioBrain] fetch error:', e);
+      if (import.meta.env.DEV) console.warn('[PortfolioBrain] fetch error:', e);
       setError(String(e));
     } finally {
       setLoading(false);
@@ -188,18 +189,25 @@ export default function PortfolioBrainPanel() {
     return <div className="p-4 text-aura-muted text-sm">Portfolio brain unavailable</div>;
   }
 
-  // Normalize response data
-  const positions = (overview?.positions || overview?.cross_bot_positions || []).map(p => ({
-    bot: p.bot || p.bot_name || '',
-    symbol: p.symbol || '',
-    direction: p.direction || p.side || (p.qty > 0 ? 'LONG' : 'SHORT'),
-    qty: Math.abs(p.qty || p.quantity || 0),
-    entry: p.entry || p.avg_cost || p.avg_price || 0,
-    pnl: p.pnl || p.unrealized_pnl || p.current_pnl || 0,
-  }));
+  // Normalize response data — memoize to avoid recomputation on every render
+  const positions = useMemo(() => {
+    return (overview?.positions || overview?.cross_bot_positions || []).map(p => ({
+      bot: p.bot || p.bot_name || '',
+      symbol: p.symbol || '',
+      direction: p.direction || p.side || (p.qty > 0 ? 'LONG' : 'SHORT'),
+      qty: Math.abs(p.qty || p.quantity || 0),
+      entry: p.entry || p.avg_cost || p.avg_price || 0,
+      pnl: p.pnl || p.unrealized_pnl || p.current_pnl || 0,
+    }));
+  }, [overview]);
 
-  const conflicts = overview?.conflicts || overview?.conflict_alerts || [];
-  const sectors = normalizeSector(overview?.sectors || overview?.sector_exposure || overview?.exposure_by_sector || {});
+  const conflicts = useMemo(() => overview?.conflicts || overview?.conflict_alerts || [], [overview]);
+
+  const sectors = useMemo(() => {
+    const raw = normalizeSector(overview?.sectors || overview?.sector_exposure || overview?.exposure_by_sector || {});
+    return [...raw].sort((a, b) => b.value - a.value).slice(0, 8);
+  }, [overview]);
+
   const totalValue = overview?.total_market_value || overview?.total_value || overview?.market_value || 0;
   const totalPnl = overview?.total_pnl || positions.reduce((s, p) => s + p.pnl, 0);
   const positionCount = positions.length;
@@ -237,7 +245,7 @@ export default function PortfolioBrainPanel() {
         <DataTable
           columns={POSITION_COLUMNS}
           data={positions}
-          defaultSort={{ key: 'pnl', dir: 'desc' }}
+          defaultSort={PNL_DESC_SORT}
           emptyText={loading ? 'Loading...' : 'No positions'}
         />
       </div>
@@ -247,7 +255,7 @@ export default function PortfolioBrainPanel() {
         <div className="glass-panel p-3 flex-shrink-0">
           <div className="text-xs text-aura-muted mb-2 font-medium">Sector Exposure</div>
           <div className="space-y-1">
-            {sectors.sort((a, b) => b.value - a.value).slice(0, 8).map((s, i) => {
+            {sectors.map((s, i) => {
               const maxVal = sectors[0]?.value || 1;
               const pct = maxVal > 0 ? (s.value / maxVal) * 100 : 0;
               return (
@@ -277,3 +285,5 @@ export default function PortfolioBrainPanel() {
     </div>
   );
 }
+
+export default memo(PortfolioBrainPanel);

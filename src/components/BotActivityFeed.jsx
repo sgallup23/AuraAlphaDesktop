@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react'
 import { api } from '../utils/api'
 
 const COLORS = {
@@ -35,14 +35,38 @@ function timeAgo(date) {
   return `${hrs}h ago`
 }
 
-export default function BotActivityFeed() {
+// Extracted row component to avoid re-rendering the entire list on tick updates
+const TradeRow = memo(function TradeRow({ trade, styles }) {
+  const price = Number(trade.price ?? trade.fill_price ?? trade.avg_fill ?? trade.limit_price) || 0
+  const ts = trade.timestamp instanceof Date ? trade.timestamp
+    : typeof trade.timestamp === 'number' ? new Date(trade.timestamp < 1e12 ? trade.timestamp * 1000 : trade.timestamp)
+    : new Date()
+  const side = (trade.side || trade.action || '').toUpperCase()
+  const botName = String(trade.bot || '\u2014').toUpperCase()
+  return (
+    <div key={trade.id || `${trade.symbol}-${trade.bot}-${ts.getTime()}`} className="trade-row" style={styles.tradeRow}>
+      <div style={styles.botDot(botName)} />
+      <span style={styles.botName(botName)}>{botName}</span>
+      <span style={styles.sideBadge(side)}>{side}</span>
+      <span style={styles.symbol}>{String(trade.symbol || '\u2014')}</span>
+      <span style={styles.price}>
+        {price > 0 ? `$${price >= 1000
+          ? price.toLocaleString('en-US', { minimumFractionDigits: 0 })
+          : price.toFixed(2)}` : '\u2014'}
+      </span>
+      <span style={styles.timeAgo}>{timeAgo(ts)}</span>
+    </div>
+  )
+})
+
+function BotActivityFeed() {
   const [trades, setTrades] = useState([])
   const [loading, setLoading] = useState(true)
   const [activeFilter, setActiveFilter] = useState('ALL')
   const [tick, setTick] = useState(0)
   const intervalRef = useRef(null)
 
-  const fetchTrades = async () => {
+  const fetchTrades = useCallback(async () => {
     try {
       const data = await api('/telemetry/latest')
       if (!data) throw new Error('API error')
@@ -86,12 +110,16 @@ export default function BotActivityFeed() {
   const safeTrades = Array.isArray(trades) ? trades : []
 
   // Build filter list dynamically from actual bot names in trades
-  const botNames = [...new Set(safeTrades.map(t => String(t.bot || '').toUpperCase()).filter(Boolean))]
-  const filters = ['ALL', ...botNames.sort()]
+  const filters = useMemo(() => {
+    const botNames = [...new Set(safeTrades.map(t => String(t.bot || '').toUpperCase()).filter(Boolean))]
+    return ['ALL', ...botNames.sort()]
+  }, [safeTrades])
 
-  const filtered = activeFilter === 'ALL'
-    ? safeTrades
-    : safeTrades.filter((t) => String(t.bot || '').toUpperCase() === activeFilter)
+  const filtered = useMemo(() => {
+    return activeFilter === 'ALL'
+      ? safeTrades
+      : safeTrades.filter((t) => String(t.bot || '').toUpperCase() === activeFilter)
+  }, [safeTrades, activeFilter])
 
   const styles = {
     card: {
@@ -311,28 +339,13 @@ export default function BotActivityFeed() {
               : `No trades for ${activeFilter}`}
           </div>
         ) : (
-          filtered.map((trade) => {
-            const price = Number(trade.price ?? trade.fill_price ?? trade.avg_fill ?? trade.limit_price) || 0
-            const ts = trade.timestamp instanceof Date ? trade.timestamp
-              : typeof trade.timestamp === 'number' ? new Date(trade.timestamp < 1e12 ? trade.timestamp * 1000 : trade.timestamp)
-              : new Date()
-            const side = (trade.side || trade.action || '').toUpperCase()
-            const botName = String(trade.bot || '—').toUpperCase()
-            return (
-              <div key={trade.id || `${trade.symbol}-${trade.bot}-${ts.getTime()}`} className="trade-row" style={styles.tradeRow}>
-                <div style={styles.botDot(botName)} />
-                <span style={styles.botName(botName)}>{botName}</span>
-                <span style={styles.sideBadge(side)}>{side}</span>
-                <span style={styles.symbol}>{String(trade.symbol || '—')}</span>
-                <span style={styles.price}>
-                  {price > 0 ? `$${price >= 1000
-                    ? price.toLocaleString('en-US', { minimumFractionDigits: 0 })
-                    : price.toFixed(2)}` : '—'}
-                </span>
-                <span style={styles.timeAgo}>{timeAgo(ts)}</span>
-              </div>
-            )
-          })
+          filtered.map((trade) => (
+              <TradeRow
+                key={trade.id || `${trade.symbol}-${trade.bot}-${trade.timestamp}`}
+                trade={trade}
+                styles={styles}
+              />
+          ))
         )}
       </div>
 
@@ -343,3 +356,5 @@ export default function BotActivityFeed() {
     </div>
   )
 }
+
+export default memo(BotActivityFeed)

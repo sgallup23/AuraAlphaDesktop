@@ -75,7 +75,7 @@ export default function ChartPanel() {
       chart.remove();
     };
     } catch (err) {
-      console.error('Chart init failed:', err);
+      if (import.meta.env.DEV) console.error('Chart init failed:', err);
       setChartError(String(err));
     }
   }, []);

@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { api } from '../utils/api';
+import useVisibility from './useVisibility';
 
 const BOT_COLORS = { shawn: '#22d3ee', shane: '#a78bfa', nova: '#f59e0b' };
 const BOT_META_KEYS = new Set(['gateway_connected', 'accounts', 'equity', 'position_count', 'trade_count']);
@@ -36,6 +37,8 @@ export default function useLiveBots(pollMs = 10000) {
   const [bots, setBots] = useState([]);
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
+  const visible = useVisibility();
+  const intervalRef = useRef(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -46,17 +49,28 @@ export default function useLiveBots(pollMs = 10000) {
       setHealth(healthData);
       setBots(parseBots(telData));
     } catch (e) {
-      console.warn('[useLiveBots] fetch error:', e);
+      if (import.meta.env.DEV) console.warn('[useLiveBots] fetch error:', e);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchData();
-    const iv = setInterval(fetchData, pollMs);
-    return () => clearInterval(iv);
-  }, [fetchData, pollMs]);
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (visible) {
+      fetchData();
+      intervalRef.current = setInterval(fetchData, pollMs);
+    }
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [fetchData, pollMs, visible]);
 
   const totalEquity = bots.reduce((s, b) => s + b.equity, 0);
   const totalPnl = bots.reduce((s, b) => s + b.dayPnl, 0);

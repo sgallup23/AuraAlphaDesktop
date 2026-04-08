@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback, memo } from 'react';
 
 /**
  * DataTable — Shared sortable table component.
@@ -10,14 +10,41 @@ import { useState, useMemo } from 'react';
  *   emptyText — string shown when no data
  *   onRowClick — optional (row) => void
  */
-export default function DataTable({ columns, data, defaultSort, emptyText = 'No data', onRowClick }) {
+
+const DataTableRow = memo(function DataTableRow({ row, columns, onRowClick, clickable }) {
+  const handleClick = useCallback(() => onRowClick?.(row), [onRowClick, row]);
+  return (
+    <tr
+      className={`border-b border-aura-border/50 hover:bg-aura-surface2/50 ${clickable ? 'cursor-pointer' : ''}`}
+      onClick={clickable ? handleClick : undefined}
+    >
+      {columns.map(col => (
+        <td
+          key={col.key}
+          className={`px-2 py-1.5 ${col.mono ? 'font-mono' : ''}`}
+          style={col.align ? { textAlign: col.align } : undefined}
+        >
+          {col.render ? col.render(row[col.key], row) : row[col.key]}
+        </td>
+      ))}
+    </tr>
+  );
+});
+
+function DataTable({ columns, data, defaultSort, emptyText = 'No data', onRowClick }) {
   const [sortKey, setSortKey] = useState(defaultSort?.key || columns[0]?.key);
   const [sortDir, setSortDir] = useState(defaultSort?.dir || 'asc');
 
-  const toggleSort = (key) => {
-    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortKey(key); setSortDir('asc'); }
-  };
+  const toggleSort = useCallback((key) => {
+    setSortKey(prev => {
+      if (prev === key) {
+        setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        return prev;
+      }
+      setSortDir('asc');
+      return key;
+    });
+  }, []);
 
   const sorted = useMemo(() => {
     return [...data].sort((a, b) => {
@@ -26,6 +53,8 @@ export default function DataTable({ columns, data, defaultSort, emptyText = 'No 
       return sortDir === 'asc' ? cmp : -cmp;
     });
   }, [data, sortKey, sortDir]);
+
+  const clickable = !!onRowClick;
 
   return (
     <div className="overflow-auto">
@@ -45,21 +74,13 @@ export default function DataTable({ columns, data, defaultSort, emptyText = 'No 
         </thead>
         <tbody>
           {sorted.map((row, i) => (
-            <tr
-              key={i}
-              className={`border-b border-aura-border/50 hover:bg-aura-surface2/50 ${onRowClick ? 'cursor-pointer' : ''}`}
-              onClick={() => onRowClick?.(row)}
-            >
-              {columns.map(col => (
-                <td
-                  key={col.key}
-                  className={`px-2 py-1.5 ${col.mono ? 'font-mono' : ''}`}
-                  style={col.align ? { textAlign: col.align } : undefined}
-                >
-                  {col.render ? col.render(row[col.key], row) : row[col.key]}
-                </td>
-              ))}
-            </tr>
+            <DataTableRow
+              key={row.id || row.symbol || i}
+              row={row}
+              columns={columns}
+              onRowClick={onRowClick}
+              clickable={clickable}
+            />
           ))}
           {sorted.length === 0 && (
             <tr><td colSpan={columns.length} className="text-center py-6 text-aura-muted">{emptyText}</td></tr>
@@ -69,3 +90,5 @@ export default function DataTable({ columns, data, defaultSort, emptyText = 'No 
     </div>
   );
 }
+
+export default memo(DataTable);

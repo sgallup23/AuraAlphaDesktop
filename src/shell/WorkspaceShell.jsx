@@ -7,6 +7,7 @@ import TopBar from './TopBar';
 import { PANELS } from '../docking/panelRegistry';
 import { DEFAULT_LAYOUT } from '../docking/defaultLayout';
 import CommandPalette from '../components/CommandPalette';
+import PanelLoader from '../components/PanelLoader';
 import { useAuth } from '../contexts/AuthContext';
 import { usePreferences } from '../contexts/PreferencesContext';
 
@@ -14,7 +15,7 @@ import { usePreferences } from '../contexts/PreferencesContext';
 class PanelErrorBoundary extends Component {
   state = { error: null };
   static getDerivedStateFromError(error) { return { error }; }
-  componentDidCatch(err) { console.error('[Panel crash]', this.props.panelId, err); }
+  componentDidCatch(err) { if (import.meta.env.DEV) console.error('[Panel crash]', this.props.panelId, err); }
   render() {
     if (this.state.error) {
       return (
@@ -40,7 +41,7 @@ function PanelWrapper({ panelId }) {
   const PanelComponent = panel.component;
   return (
     <PanelErrorBoundary panelId={panelId}>
-      <Suspense fallback={<div className="p-4 text-aura-muted animate-pulse">Loading {panel.title}...</div>}>
+      <Suspense fallback={<PanelLoader title={panel.title} />}>
         <div className="panel-content" style={{ height: '100%', overflow: 'auto' }}>
           <PanelComponent />
         </div>
@@ -79,7 +80,7 @@ export default function WorkspaceShell() {
       const layout = JSON.parse(json);
       setModel(Model.fromJson(layout));
     } catch (e) {
-      console.warn('Failed to load workspace, falling back to default:', e);
+      if (import.meta.env.DEV) console.warn('Failed to load workspace, falling back to default:', e);
       setModel(Model.fromJson(DEFAULT_LAYOUT));
     }
   }, []);
@@ -98,7 +99,7 @@ export default function WorkspaceShell() {
   const handlePaletteAction = useCallback((actionId) => {
     switch (actionId) {
       case 'check-health':
-        invoke('check_health').catch(e => console.warn('Health check failed:', e));
+        invoke('check_health').catch(e => { if (import.meta.env.DEV) console.warn('Health check failed:', e); });
         break;
       case 'toggle-compact':
         setPref('compactMode', !prefs.compactMode);
@@ -107,13 +108,13 @@ export default function WorkspaceShell() {
         window.dispatchEvent(new CustomEvent('aura:refresh'));
         break;
       case 'pop-out':
-        invoke('create_panel_window').catch(e => console.warn('Pop-out failed:', e));
+        invoke('create_panel_window').catch(e => { if (import.meta.env.DEV) console.warn('Pop-out failed:', e); });
         break;
       case 'logout':
         logout();
         break;
       default:
-        console.warn('Unknown action:', actionId);
+        if (import.meta.env.DEV) console.warn('Unknown action:', actionId);
     }
   }, [prefs.compactMode, setPref, logout]);
 
@@ -143,7 +144,7 @@ export default function WorkspaceShell() {
       const list = await invoke('list_workspaces');
       setWorkspaces(list);
     } catch (e) {
-      console.warn('Failed to save workspace:', e);
+      if (import.meta.env.DEV) console.warn('Failed to save workspace:', e);
     }
   }, [model, activeWorkspace]);
 

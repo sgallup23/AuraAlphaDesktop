@@ -17,7 +17,7 @@ export default function useStrategyRouting() {
       const data = await api('/api/strategy-routes/', { silent: true });
       setRoutes(data?.routes || []);
     } catch (e) {
-      console.warn('Failed to fetch routes:', e);
+      if (import.meta.env.DEV) console.warn('Failed to fetch routes:', e);
     }
   }, []);
 
@@ -27,7 +27,7 @@ export default function useStrategyRouting() {
       const list = data?.strategies || data || [];
       setStrategies(Array.isArray(list) ? list : []);
     } catch (e) {
-      console.warn('Failed to fetch strategies:', e);
+      if (import.meta.env.DEV) console.warn('Failed to fetch strategies:', e);
     }
   }, []);
 

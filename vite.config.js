@@ -18,6 +18,19 @@ export default defineConfig({
     // singlefile needs everything in one chunk
     cssCodeSplit: false,
     assetsInlineLimit: 100000000,
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: true,
+        drop_debugger: true,
+        passes: 2,
+        dead_code: true,
+        unused: true,
+      },
+      format: {
+        comments: false,
+      },
+    },
     rollupOptions: {
       output: {
         manualChunks: undefined,

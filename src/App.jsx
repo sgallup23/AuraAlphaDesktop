@@ -2,15 +2,20 @@ window.__APP_LOAD_TIME = Date.now();
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { PreferencesProvider } from './contexts/PreferencesContext';
 import { ConfigProvider } from './contexts/ConfigContext';
-import LoginPage from './pages/LoginPage';
-import StartupPage from './pages/StartupPage';
-import ExplorerPage from './pages/ExplorerPage';
-import WorkspaceShell from './shell/WorkspaceShell';
 import ForceUpdateModal from './components/ForceUpdateModal';
 import UpdateAvailableBanner from './components/UpdateAvailableBanner';
-import { Suspense, Component, useState, useEffect, useCallback } from 'react';
+import PanelLoader from './components/PanelLoader';
+import { lazy, Suspense, Component, useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { PANELS } from './docking/panelRegistry';
+
+// Lazy-load page-level components to reduce initial bundle parse time.
+// StartupPage is first to render but still benefits from code-splitting
+// since Vite can prefetch it while the main chunk evaluates.
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const StartupPage = lazy(() => import('./pages/StartupPage'));
+const ExplorerPage = lazy(() => import('./pages/ExplorerPage'));
+const WorkspaceShell = lazy(() => import('./shell/WorkspaceShell'));
 
 class ErrorBoundary extends Component {
   state = { error: null };
@@ -68,12 +73,21 @@ class ErrorBoundary extends Component {
   }
 }
 
+// Full-page loading fallback for lazy-loaded routes (login, explorer, workspace)
+function PageLoader() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-aura-bg">
+      <PanelLoader title="Aura Alpha" />
+    </div>
+  );
+}
+
 function PopOutPanel({ panelId }) {
   const panel = PANELS[panelId];
   if (!panel) return <div className="p-4 text-aura-muted">Unknown panel</div>;
   const Component = panel.component;
   return (
-    <Suspense fallback={<div className="p-4 text-aura-muted animate-pulse">Loading...</div>}>
+    <Suspense fallback={<PanelLoader title={panel.title} />}>
       <div className="min-h-screen bg-aura-bg p-3">
         <Component />
       </div>
@@ -98,14 +112,14 @@ function AuthGate() {
     );
   }
 
-  if (!isAuthenticated) return <LoginPage />;
+  if (!isAuthenticated) return <Suspense fallback={<PageLoader />}><LoginPage /></Suspense>;
 
   // Check for pop-out panel
   const params = new URLSearchParams(window.location.search);
   const panelId = params.get('panel');
   if (panelId) return <PopOutPanel panelId={panelId} />;
 
-  return <WorkspaceShell />;
+  return <Suspense fallback={<PageLoader />}><WorkspaceShell /></Suspense>;
 }
 
 function AppWithStartup() {
@@ -158,7 +172,7 @@ function AppWithStartup() {
         }
       }
     } catch (err) {
-      console.warn('[App] check_for_update failed:', err);
+      if (import.meta.env.DEV) console.warn('[App] check_for_update failed:', err);
       // Non-fatal — proceed normally if the command errors
       setUpdateInfo({ update_required: false });
     }
@@ -175,7 +189,6 @@ function AppWithStartup() {
         const ws = await inv('grid_worker_status').catch(() => null);
         if (ws && !ws.running) {
           await inv('start_grid_worker').catch(() => {});
-          console.log('[App] Grid worker auto-started after login');
         }
       } catch {}
     }, 5000);
@@ -189,11 +202,11 @@ function AppWithStartup() {
   }, [runVersionCheck]);
 
   if (phase === 'startup') {
-    return <StartupPage onReady={handleReady} onNeedsLogin={handleNeedsLogin} />;
+    return <Suspense fallback={<PageLoader />}><StartupPage onReady={handleReady} onNeedsLogin={handleNeedsLogin} /></Suspense>;
   }
 
   if (phase === 'explorer') {
-    return <ExplorerPage onSignIn={() => setPhase('app')} />;
+    return <Suspense fallback={<PageLoader />}><ExplorerPage onSignIn={() => setPhase('app')} /></Suspense>;
   }
 
   // Block the entire app if the running version is below the enforced minimum

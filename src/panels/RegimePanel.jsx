@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { createChart } from 'lightweight-charts';
 import { api } from '../utils/api';
 import StatusDot from '../components/StatusDot';
@@ -37,7 +37,7 @@ function regimeSolidColor(regime) {
   return REGIME_SOLID_COLORS[(regime || '').toLowerCase()] || '#8B949E';
 }
 
-export default function RegimePanel() {
+function RegimePanel() {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
@@ -102,7 +102,7 @@ export default function RegimePanel() {
         seriesRef.current = null;
       };
     } catch (err) {
-      console.error('Regime chart init failed:', err);
+      if (import.meta.env.DEV) console.error('Regime chart init failed:', err);
       setChartError(String(err));
     }
   }, []);
@@ -184,7 +184,7 @@ export default function RegimePanel() {
         setTransitions(trans.slice(0, 30));
       }
     } catch (e) {
-      console.warn('[RegimePanel] fetch error:', e);
+      if (import.meta.env.DEV) console.warn('[RegimePanel] fetch error:', e);
     } finally {
       setLoading(false);
     }
@@ -197,8 +197,9 @@ export default function RegimePanel() {
   }, [fetchData]);
 
   // Normalize summary into per-market regime distribution
-  const marketSummaries = [];
-  if (summary) {
+  const marketSummaries = useMemo(() => {
+    const result = [];
+    if (!summary) return result;
     const markets = summary.markets || summary.per_market || summary.distribution || summary;
     const entries = Array.isArray(markets) ? markets : Object.entries(typeof markets === 'object' ? markets : {});
     for (const entry of entries) {
@@ -206,16 +207,17 @@ export default function RegimePanel() {
         const [mKey, mVal] = entry;
         const current = typeof mVal === 'string' ? mVal : (mVal?.current || mVal?.regime || '');
         const dist = typeof mVal === 'object' ? (mVal?.distribution || mVal?.history || mVal) : {};
-        marketSummaries.push({ market: mKey, current, distribution: dist });
+        result.push({ market: mKey, current, distribution: dist });
       } else if (typeof entry === 'object' && entry !== null) {
-        marketSummaries.push({
+        result.push({
           market: entry.market || entry.name || entry.key || '',
           current: entry.current || entry.regime || '',
           distribution: entry.distribution || entry.history || {},
         });
       }
     }
-  }
+    return result;
+  }, [summary]);
 
   return (
     <div className="flex flex-col h-full">
@@ -379,3 +381,5 @@ export default function RegimePanel() {
     </div>
   );
 }
+
+export default memo(RegimePanel);

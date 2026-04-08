@@ -7,7 +7,7 @@ export function ConfigProvider({ children }) {
   const [config, setConfig] = useState(null);
 
   useEffect(() => {
-    invoke('get_config').then(setConfig).catch(console.warn);
+    invoke('get_config').then(setConfig).catch(e => { if (import.meta.env.DEV) console.warn(e); });
   }, []);
 
   return (

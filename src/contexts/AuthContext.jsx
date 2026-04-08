@@ -36,7 +36,7 @@ export function AuthProvider({ children }) {
           setConnectionStatus('offline');
         }
       } catch (e) {
-        console.warn('[Auth] Failed to load token, entering standalone mode:', e);
+        if (import.meta.env.DEV) console.warn('[Auth] Failed to load token, entering standalone mode:', e);
         setToken(STANDALONE_TOKEN);
         setUser(STANDALONE_USER);
         setConnectionStatus('offline');
@@ -108,7 +108,7 @@ export function AuthProvider({ children }) {
     try {
       await invoke('clear_auth_token');
     } catch (e) {
-      console.warn('[Auth] clear failed:', e);
+      if (import.meta.env.DEV) console.warn('[Auth] clear failed:', e);
     }
   }, []);
 

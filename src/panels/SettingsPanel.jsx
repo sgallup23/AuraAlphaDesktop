@@ -72,7 +72,7 @@ export default function SettingsPanel() {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
-      console.warn('[Settings] save failed:', err);
+      if (import.meta.env.DEV) console.warn('[Settings] save failed:', err);
     }
   };
 

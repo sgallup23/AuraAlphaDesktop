@@ -28,7 +28,7 @@ export function PreferencesProvider({ children }) {
     try {
       await invoke('save_preference', { key, value: JSON.parse(JSON.stringify(value)) });
     } catch (e) {
-      console.warn('[Prefs] save failed:', e);
+      if (import.meta.env.DEV) console.warn('[Prefs] save failed:', e);
     }
   }, []);
 

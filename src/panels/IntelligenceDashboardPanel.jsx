@@ -52,7 +52,7 @@ export default function IntelligenceDashboardPanel() {
         setError('No data');
       }
     } catch (e) {
-      console.warn('[IntelligenceDashboard] fetch error:', e);
+      if (import.meta.env.DEV) console.warn('[IntelligenceDashboard] fetch error:', e);
       setError(String(e));
     } finally {
       setLoading(false);

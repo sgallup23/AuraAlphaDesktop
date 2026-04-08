@@ -58,7 +58,7 @@ export default function StartupPage({ onReady, onNeedsLogin }) {
           onNeedsLogin();
         }
       } catch (err) {
-        console.error('[Startup] failed:', err);
+        if (import.meta.env.DEV) console.error('[Startup] failed:', err);
         if (!cancelled) {
           setMessage('Startup failed. Please restart.');
           setStatus('error');

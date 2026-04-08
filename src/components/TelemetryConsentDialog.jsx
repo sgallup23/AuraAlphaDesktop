@@ -22,7 +22,7 @@ export default function TelemetryConsentDialog({ onDecided }) {
           onDecided(consent.consented);
         }
       } catch (err) {
-        console.warn('[TelemetryConsent] Failed to check consent:', err);
+        if (import.meta.env.DEV) console.warn('[TelemetryConsent] Failed to check consent:', err);
         // If the command fails (e.g. not in Tauri), don't show dialog
       }
     })();
@@ -32,7 +32,7 @@ export default function TelemetryConsentDialog({ onDecided }) {
     try {
       await invoke('set_telemetry_consent', { consented });
     } catch (err) {
-      console.warn('[TelemetryConsent] Failed to save consent:', err);
+      if (import.meta.env.DEV) console.warn('[TelemetryConsent] Failed to save consent:', err);
     }
     setVisible(false);
     if (onDecided) onDecided(consented);

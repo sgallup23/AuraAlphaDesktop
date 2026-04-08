@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, memo, useCallback } from 'react';
 import usePositions from '../hooks/usePositions';
 import DataTable from '../components/DataTable';
 import { formatCurrency, formatPnl, pnlColor } from '../utils/formatters';
@@ -25,19 +25,24 @@ const ORDER_COLUMNS = [
   { key: 'order_type', label: 'Type', render: (v, row) => <span className="text-aura-muted">{v || row.type}</span> },
 ];
 
-export default function PositionsPanel() {
+const SYMBOL_ASC_SORT = { key: 'symbol', dir: 'asc' };
+
+function PositionsPanel() {
   const { positions, orders, loading } = usePositions();
   const [tab, setTab] = useState('positions');
+
+  const showPositions = useCallback(() => setTab('positions'), []);
+  const showOrders = useCallback(() => setTab('orders'), []);
 
   if (loading) return <div className="p-4 text-aura-muted animate-pulse">Loading positions...</div>;
 
   return (
     <div className="space-y-2">
       <div className="flex gap-2">
-        <button onClick={() => setTab('positions')} className={`text-xs px-3 py-1 rounded ${tab === 'positions' ? 'bg-aura-blue text-white' : 'text-aura-muted hover:text-aura-text'}`}>
+        <button onClick={showPositions} className={`text-xs px-3 py-1 rounded ${tab === 'positions' ? 'bg-aura-blue text-white' : 'text-aura-muted hover:text-aura-text'}`}>
           Positions ({positions.length})
         </button>
-        <button onClick={() => setTab('orders')} className={`text-xs px-3 py-1 rounded ${tab === 'orders' ? 'bg-aura-blue text-white' : 'text-aura-muted hover:text-aura-text'}`}>
+        <button onClick={showOrders} className={`text-xs px-3 py-1 rounded ${tab === 'orders' ? 'bg-aura-blue text-white' : 'text-aura-muted hover:text-aura-text'}`}>
           Orders ({orders.length})
         </button>
       </div>
@@ -46,17 +51,19 @@ export default function PositionsPanel() {
         <DataTable
           columns={POS_COLUMNS}
           data={positions}
-          defaultSort={{ key: 'symbol', dir: 'asc' }}
+          defaultSort={SYMBOL_ASC_SORT}
           emptyText="No open positions"
         />
       ) : (
         <DataTable
           columns={ORDER_COLUMNS}
           data={orders}
-          defaultSort={{ key: 'symbol', dir: 'asc' }}
+          defaultSort={SYMBOL_ASC_SORT}
           emptyText="No orders"
         />
       )}
     </div>
   );
 }
+
+export default memo(PositionsPanel);

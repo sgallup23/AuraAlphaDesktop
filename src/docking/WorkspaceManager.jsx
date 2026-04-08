@@ -28,7 +28,7 @@ export function useWorkspaceManager(dockRef, defaultLayout) {
       const layout = JSON.parse(json);
       dockRef.current?.loadLayout(layout);
     } catch (e) {
-      console.warn('Failed to load workspace:', e);
+      if (import.meta.env.DEV) console.warn('Failed to load workspace:', e);
     }
   }, [dockRef, defaultLayout]);
 
@@ -43,13 +43,13 @@ export function useWorkspaceManager(dockRef, defaultLayout) {
       const list = await invoke('list_workspaces');
       setWorkspaces(list);
     } catch (e) {
-      console.warn('Failed to save workspace:', e);
+      if (import.meta.env.DEV) console.warn('Failed to save workspace:', e);
     }
   }, [dockRef, active]);
 
   const remove = useCallback(async (name) => {
     // Note: requires a delete_workspace IPC command if needed
-    console.warn('Delete workspace not yet implemented');
+    if (import.meta.env.DEV) console.warn('Delete workspace not yet implemented');
   }, []);
 
   return { active, workspaces, load, save, remove };

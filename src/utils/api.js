@@ -34,7 +34,7 @@ async function setTokens(access, refresh, user) {
       userJson: typeof user === 'string' ? user : JSON.stringify(user),
     });
   } catch (e) {
-    console.warn('[Auth] Failed to save tokens:', e);
+    if (import.meta.env.DEV) console.warn('[Auth] Failed to save tokens:', e);
   }
 }
 

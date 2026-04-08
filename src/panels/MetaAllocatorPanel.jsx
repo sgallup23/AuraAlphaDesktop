@@ -32,7 +32,7 @@ export default function MetaAllocatorPanel() {
         setError('No data');
       }
     } catch (e) {
-      console.warn('[MetaAllocator] fetch error:', e);
+      if (import.meta.env.DEV) console.warn('[MetaAllocator] fetch error:', e);
       setError(String(e));
     } finally {
       setLoading(false);

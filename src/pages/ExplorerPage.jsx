@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 // Format a decimal as percentage string
@@ -16,7 +16,7 @@ function fmt(value, decimals = 2) {
   });
 }
 
-function MetricCard({ label, value, subtitle, positive }) {
+const MetricCard = memo(function MetricCard({ label, value, subtitle, positive }) {
   const color =
     positive === true
       ? '#3FB950'
@@ -49,9 +49,9 @@ function MetricCard({ label, value, subtitle, positive }) {
       )}
     </div>
   );
-}
+});
 
-function SymbolRow({ result, expanded, onToggle }) {
+const SymbolRow = memo(function SymbolRow({ result, expanded, onToggle }) {
   const m = result.metrics;
   const returnColor = m.total_return >= 0 ? '#3FB950' : '#F85149';
   const sharpeColor = m.sharpe >= 0.5 ? '#3FB950' : m.sharpe >= 0 ? '#D29922' : '#F85149';
@@ -121,9 +121,21 @@ function SymbolRow({ result, expanded, onToggle }) {
       )}
     </>
   );
-}
+});
 
-export default function ExplorerPage({ onSignIn }) {
+const TABLE_HEADERS = ['Symbol', 'Return', 'Sharpe', 'Win Rate', 'Trades', 'Max DD', 'Avg Hold', ''];
+
+// Wrapper to stabilize onToggle callback per row, preventing all SymbolRows from re-rendering on expand
+const SymbolRowWrapper = memo(function SymbolRowWrapper({ result, expandedSymbol, setExpandedSymbol }) {
+  const expanded = expandedSymbol === result.symbol;
+  const onToggle = useCallback(() => {
+    setExpandedSymbol((prev) => (prev === result.symbol ? null : result.symbol));
+  }, [result.symbol, setExpandedSymbol]);
+
+  return <SymbolRow result={result} expanded={expanded} onToggle={onToggle} />;
+});
+
+function ExplorerPage({ onSignIn }) {
   const [phase, setPhase] = useState('idle'); // idle | running | done | error
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
@@ -144,7 +156,7 @@ export default function ExplorerPage({ onSignIn }) {
       setData(result);
       setPhase('done');
     } catch (err) {
-      console.error('[Explorer] Demo backtest failed:', err);
+      if (import.meta.env.DEV) console.error('[Explorer] Demo backtest failed:', err);
       setError(String(err));
       setPhase('error');
     }
@@ -398,7 +410,7 @@ export default function ExplorerPage({ onSignIn }) {
               >
                 <thead>
                   <tr style={{ borderBottom: '1px solid #30363D' }}>
-                    {['Symbol', 'Return', 'Sharpe', 'Win Rate', 'Trades', 'Max DD', 'Avg Hold', ''].map(
+                    {TABLE_HEADERS.map(
                       (h) => (
                         <th
                           key={h}
@@ -420,15 +432,11 @@ export default function ExplorerPage({ onSignIn }) {
                 </thead>
                 <tbody>
                   {data.results.map((r) => (
-                    <SymbolRow
+                    <SymbolRowWrapper
                       key={r.symbol}
                       result={r}
-                      expanded={expandedSymbol === r.symbol}
-                      onToggle={() =>
-                        setExpandedSymbol(
-                          expandedSymbol === r.symbol ? null : r.symbol,
-                        )
-                      }
+                      expandedSymbol={expandedSymbol}
+                      setExpandedSymbol={setExpandedSymbol}
                     />
                   ))}
                 </tbody>
@@ -524,3 +532,5 @@ export default function ExplorerPage({ onSignIn }) {
     </div>
   );
 }
+
+export default memo(ExplorerPage);

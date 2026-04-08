@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { api } from '../utils/api';
 import MetricTile from '../components/MetricTile';
 import StatusDot from '../components/StatusDot';
 
-export default function GridComputePanel() {
+function GridComputePanel() {
   const [status, setStatus] = useState(null);
   const [workerStatus, setWorkerStatus] = useState(null);
   const [latestBatch, setLatestBatch] = useState(null);
@@ -31,7 +31,7 @@ export default function GridComputePanel() {
         if (batchData) setLatestBatch(batchData);
       }
     } catch (e) {
-      console.warn('[GridCompute] fetch error:', e);
+      if (import.meta.env.DEV) console.warn('[GridCompute] fetch error:', e);
     } finally {
       setLoading(false);
     }
@@ -68,7 +68,7 @@ export default function GridComputePanel() {
       const result = await invoke(cmd);
       setWorkerStatus(result);
     } catch (e) {
-      console.warn('[GridCompute] worker toggle error:', e);
+      if (import.meta.env.DEV) console.warn('[GridCompute] worker toggle error:', e);
     } finally {
       setWorkerLoading(false);
     }
@@ -78,29 +78,38 @@ export default function GridComputePanel() {
     return <div className="p-4 text-aura-muted animate-pulse">Loading grid compute...</div>;
   }
 
-  const queueDepth = status?.queue_depth ?? status?.pending_jobs ?? status?.queue_size
-    ?? (status?.jobs_by_status ? Object.values(status.jobs_by_status).reduce((a, b) => a + b, 0) : '--');
-  const workerList = status?.workers || [];
-  const activeWorkers = (status?.active_workers ?? status?.worker_count
-    ?? workerList.filter(w => w.status === 'online' || w.status === 'busy').length)
-    || (status?.workers_by_status ? Object.entries(status.workers_by_status).filter(([s]) => s !== 'dead' && s !== 'offline').reduce((a, [, v]) => a + v, 0) : '--');
-  const completed = status?.jobs_completed ?? status?.completed ?? status?.total_completed
-    ?? status?.jobs_by_status?.completed ?? '--';
-  const throughputRaw = status?.throughput ?? status?.jobs_per_min ?? status?.jobs_per_minute
-    ?? (status?.throughput_1h != null ? (status.throughput_1h / 60) : null);
-  const throughput = throughputRaw != null ? throughputRaw : '--';
-  const recentBatches = status?.recent_batches || status?.batches || [];
+  const gridMetrics = useMemo(() => {
+    const workerList = status?.workers || [];
+    const queueDepth = status?.queue_depth ?? status?.pending_jobs ?? status?.queue_size
+      ?? (status?.jobs_by_status ? Object.values(status.jobs_by_status).reduce((a, b) => a + b, 0) : '--');
+    const activeWorkers = (status?.active_workers ?? status?.worker_count
+      ?? workerList.filter(w => w.status === 'online' || w.status === 'busy').length)
+      || (status?.workers_by_status ? Object.entries(status.workers_by_status).filter(([s]) => s !== 'dead' && s !== 'offline').reduce((a, [, v]) => a + v, 0) : '--');
+    const completed = status?.jobs_completed ?? status?.completed ?? status?.total_completed
+      ?? status?.jobs_by_status?.completed ?? '--';
+    const throughputRaw = status?.throughput ?? status?.jobs_per_min ?? status?.jobs_per_minute
+      ?? (status?.throughput_1h != null ? (status.throughput_1h / 60) : null);
+    const throughput = throughputRaw != null ? throughputRaw : '--';
+    const recentBatches = status?.recent_batches || status?.batches || [];
+    const maxJobsPerMin = workerList.length > 0
+      ? Math.max(...workerList.map(w => w.jobs_per_min || 0), 0.01)
+      : 0;
+    return { queueDepth, workerList, activeWorkers, completed, throughput, recentBatches, maxJobsPerMin };
+  }, [status]);
+
+  const { queueDepth, workerList, activeWorkers, completed, throughput, recentBatches, maxJobsPerMin } = gridMetrics;
   const isWorkerRunning = workerStatus?.running || false;
 
-  // Per-device throughput — max for bar scaling
-  const maxJobsPerMin = workerList.length > 0
-    ? Math.max(...workerList.map(w => w.jobs_per_min || 0), 0.01)
-    : 0;
-
   // Latest batch details
-  const batchResults = latestBatch?.results || latestBatch?.jobs || latestBatch?.items || [];
-  const batchStatus = latestBatch?.status || latestBatch?.state || '';
-  const batchProgress = latestBatch?.progress ?? latestBatch?.completed_pct;
+  const batchDetails = useMemo(() => ({
+    results: latestBatch?.results || latestBatch?.jobs || latestBatch?.items || [],
+    status: latestBatch?.status || latestBatch?.state || '',
+    progress: latestBatch?.progress ?? latestBatch?.completed_pct,
+  }), [latestBatch]);
+
+  const batchResults = batchDetails.results;
+  const batchStatus = batchDetails.status;
+  const batchProgress = batchDetails.progress;
 
   return (
     <div className="space-y-3 overflow-auto">
@@ -299,3 +308,5 @@ export default function GridComputePanel() {
     </div>
   );
 }
+
+export default memo(GridComputePanel);

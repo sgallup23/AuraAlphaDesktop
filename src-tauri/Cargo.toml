@@ -24,7 +24,7 @@ tauri-plugin-store = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "native-tls"], default-features = false }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "process", "signal"] }
 dirs = "5"
 log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
@@ -35,17 +35,24 @@ sha2 = "0.10"
 aes-gcm = "0.10"
 rand = "0.8"
 rayon = "1.10"
-polars = { version = "0.46", features = ["parquet", "csv", "lazy", "dtype-date", "dtype-datetime"] }
+polars = { version = "0.46", features = ["parquet", "csv", "lazy"] }
 smartcore = { version = "0.4", features = ["serde"] }
 bytemuck = { version = "1", features = ["derive"] }
 env_logger = "0.11"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.27", features = ["tokio-comp"] }
 uuid = { version = "1", features = ["v4"] }
 wgpu = { version = "29", default-features = false, features = ["wgsl", "vulkan", "dx12", "metal"], optional = true }
 
 [features]
-default = ["gpu"]
+default = []
 gpu = ["wgpu"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[profile.release]
+opt-level = "z"      # optimize for size
+lto = true           # link-time optimization
+codegen-units = 1    # single codegen unit for better optimization
+strip = true         # strip debug symbols
+panic = "abort"      # smaller binary, no unwinding

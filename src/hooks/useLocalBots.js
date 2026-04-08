@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import useVisibility from './useVisibility';
 
 export default function useLocalBots(pollMs = 10000) {
   const [configuredBrokers, setConfiguredBrokers] = useState([]);
@@ -7,7 +8,8 @@ export default function useLocalBots(pollMs = 10000) {
   const [runningBots, setRunningBots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState(null);
-  const pollRef = useRef(null);
+  const visible = useVisibility();
+  const intervalRef = useRef(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -27,10 +29,21 @@ export default function useLocalBots(pollMs = 10000) {
   }, []);
 
   useEffect(() => {
-    loadData();
-    pollRef.current = setInterval(loadData, pollMs);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [loadData, pollMs]);
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (visible) {
+      loadData();
+      intervalRef.current = setInterval(loadData, pollMs);
+    }
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [loadData, pollMs, visible]);
 
   const brokerName = useCallback((id) => {
     const b = allBrokers.find(b => b.id === id);
