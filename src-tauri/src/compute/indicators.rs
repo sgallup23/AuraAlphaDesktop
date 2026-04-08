@@ -286,21 +286,24 @@ pub fn compute_sma(data: &[f64], period: usize) -> Vec<f64> {
 /// Port of `_compute_obv` (compute_worker.py:163-174).
 /// Returns a Vec of cumulative volume direction values.
 ///
-/// Optimization: Branch-free sign computation using f64 signum.
-/// sign = (close > prev).signum() - (close < prev).signum() maps to {-1, 0, 1}
-/// without branches -- though the cumulative sum remains sequential.
+/// NOTE: OBV is inherently sequential (each value depends on the previous).
+/// Cannot use rayon here. Also cannot use f64::signum() because in Rust
+/// signum(0.0) returns 1.0 (not 0.0), which would incorrectly add volume
+/// when prices are unchanged. Must use explicit branching.
 pub fn compute_obv(closes: &[f64], volumes: &[f64]) -> Vec<f64> {
     let n = closes.len();
     let mut obv = vec![0.0; n];
 
+    // Sequential: each obv[i] depends on obv[i-1]. Branches required
+    // because Rust's f64::signum(0.0) == 1.0, not 0.0.
     for i in 1..n {
-        // Branch-free: compute direction sign as -1, 0, or +1.
-        let diff = closes[i] - closes[i - 1];
-        // signum returns -1.0, 0.0, or 1.0 for negative, zero, positive.
-        // NaN propagates naturally (signum of NaN is NaN).
-        let sign = diff.signum();
-        // If diff is exactly 0.0, signum returns 0.0 -> volume contribution is 0.
-        obv[i] = obv[i - 1] + sign * volumes[i];
+        if closes[i] > closes[i - 1] {
+            obv[i] = obv[i - 1] + volumes[i];
+        } else if closes[i] < closes[i - 1] {
+            obv[i] = obv[i - 1] - volumes[i];
+        } else {
+            obv[i] = obv[i - 1];
+        }
     }
 
     obv
