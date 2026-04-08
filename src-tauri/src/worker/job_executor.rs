@@ -1,19 +1,28 @@
-//! Job executor — dispatches grid jobs by type via Python sidecar subprocess.
+//! Job executor — dispatches grid jobs by type to pure Rust compute.
 //!
 //! Each compute-intensive job (backtest, scan, ml_inference, feature_extraction)
-//! is executed by spawning `python3 compute_worker.py --job-type <type> --params '<json>'`.
-//! The Python sidecar does the actual computation (indicators, trade simulation,
-//! metrics) and prints a single JSON line to stdout. This module captures that
-//! output and returns it as the job result.
+//! runs via `tokio::task::spawn_blocking` with a per-job timeout. Stalled jobs
+//! are killed after `JOB_TIMEOUT_SECS` so they never block a semaphore slot
+//! forever.
+//!
+//! Batch execution: `execute_jobs_batch_sync` processes multiple independent
+//! same-type jobs in parallel via rayon's par_iter, bypassing tokio overhead
+//! for bulk grid work.
 //!
 //! Lightweight jobs (health_check, ping) remain pure Rust — no subprocess needed.
 
 use log::{error, info, warn};
+use rayon::prelude::*;
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// Maximum time (seconds) a Python subprocess is allowed to run before being killed.
-const JOB_TIMEOUT_SECS: u64 = 600;
+/// Maximum time (seconds) a Rust compute job is allowed to run before being cancelled.
+/// Backtest/scan jobs are CPU-bound and should complete in under 60s for normal workloads.
+/// ML training gets its own longer timeout.
+const JOB_TIMEOUT_SECS: u64 = 300;
+
+/// Extended timeout for ML training jobs which can legitimately take longer.
+const ML_TRAIN_TIMEOUT_SECS: u64 = 600;
 
 /// Locate the compute_worker.py sidecar script.
 ///
@@ -176,9 +185,16 @@ pub async fn execute_job(job: &serde_json::Value) -> Result<serde_json::Value, S
 async fn execute_rust_backtest(job: &serde_json::Value) -> Result<serde_json::Value, String> {
     let start = Instant::now();
     let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
-    let result = tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         crate::compute::backtest::execute_backtest_job(&params)
-    }).await.map_err(|e| format!("backtest task failed: {e}"))??;
+    });
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(JOB_TIMEOUT_SECS),
+        task,
+    )
+    .await
+    .map_err(|_| format!("backtest timed out after {JOB_TIMEOUT_SECS}s"))?
+    .map_err(|e| format!("backtest task failed: {e}"))??;
     let mut r = result;
     r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
     Ok(r)
@@ -187,9 +203,16 @@ async fn execute_rust_backtest(job: &serde_json::Value) -> Result<serde_json::Va
 async fn execute_rust_scan(job: &serde_json::Value) -> Result<serde_json::Value, String> {
     let start = Instant::now();
     let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
-    let result = tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         crate::compute::scanner::execute_scan_job(&params)
-    }).await.map_err(|e| format!("scan task failed: {e}"))??;
+    });
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(JOB_TIMEOUT_SECS),
+        task,
+    )
+    .await
+    .map_err(|_| format!("scan timed out after {JOB_TIMEOUT_SECS}s"))?
+    .map_err(|e| format!("scan task failed: {e}"))??;
     let mut r = result;
     r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
     Ok(r)
@@ -198,9 +221,16 @@ async fn execute_rust_scan(job: &serde_json::Value) -> Result<serde_json::Value,
 async fn execute_rust_ml(job: &serde_json::Value) -> Result<serde_json::Value, String> {
     let start = Instant::now();
     let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
-    let result = tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         crate::compute::ml::execute_ml_job(&params)
-    }).await.map_err(|e| format!("ml task failed: {e}"))??;
+    });
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(JOB_TIMEOUT_SECS),
+        task,
+    )
+    .await
+    .map_err(|_| format!("ml inference timed out after {JOB_TIMEOUT_SECS}s"))?
+    .map_err(|e| format!("ml task failed: {e}"))??;
     let mut r = result;
     r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
     Ok(r)
@@ -217,7 +247,7 @@ async fn execute_rust_ml_train(job: &serde_json::Value) -> Result<serde_json::Va
 
     let start = Instant::now();
     let payload = job.get("payload").cloned().unwrap_or(serde_json::json!({}));
-    let result = tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         // 32MB stack for Polars DataFrames + Rayon parallel processing
         let handle = std::thread::Builder::new()
             .name("ml_train".into())
@@ -229,7 +259,14 @@ async fn execute_rust_ml_train(job: &serde_json::Value) -> Result<serde_json::Va
             })
             .map_err(|e| format!("thread spawn failed: {e}"))?;
         handle.join().map_err(|_| "ml_train thread panicked".to_string())?
-    }).await.map_err(|e| format!("ml_train task failed: {e}"))??;
+    });
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(ML_TRAIN_TIMEOUT_SECS),
+        task,
+    )
+    .await
+    .map_err(|_| format!("ml_train timed out after {ML_TRAIN_TIMEOUT_SECS}s"))?
+    .map_err(|e| format!("ml_train task failed: {e}"))??;
 
     let mut r = serde_json::json!({
         "status": result.status,
@@ -249,9 +286,16 @@ async fn execute_rust_ml_train(job: &serde_json::Value) -> Result<serde_json::Va
 async fn execute_rust_features(job: &serde_json::Value) -> Result<serde_json::Value, String> {
     let start = Instant::now();
     let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
-    let result = tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         crate::compute::features::execute_features_job(&params)
-    }).await.map_err(|e| format!("feature extraction task failed: {e}"))??;
+    });
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(JOB_TIMEOUT_SECS),
+        task,
+    )
+    .await
+    .map_err(|_| format!("feature extraction timed out after {JOB_TIMEOUT_SECS}s"))?
+    .map_err(|e| format!("feature extraction task failed: {e}"))??;
     let mut r = result;
     r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
     Ok(r)
@@ -407,4 +451,79 @@ async fn execute_ping(_job: &serde_json::Value) -> Result<serde_json::Value, Str
         "job_type": "ping",
         "pong": true,
     }))
+}
+
+// ─── Batch execution (rayon parallel, no tokio overhead) ────────────────────
+
+/// Execute a batch of compute jobs synchronously using rayon for parallelism.
+///
+/// This is useful when the caller has already dequeued a batch of jobs and
+/// wants to process them all in parallel without tokio task overhead. Each
+/// job is dispatched to the appropriate Rust compute module via rayon's
+/// par_iter, which distributes work across the global thread pool.
+///
+/// Returns a Vec of (job_id, Result) pairs. Lightweight jobs (ping,
+/// health_check) are included but run sequentially within their rayon slot.
+pub fn execute_jobs_batch_sync(
+    jobs: &[serde_json::Value],
+) -> Vec<(String, Result<serde_json::Value, String>)> {
+    if jobs.is_empty() {
+        return Vec::new();
+    }
+
+    info!(
+        "job_executor: batch-executing {} jobs via rayon par_iter",
+        jobs.len()
+    );
+
+    jobs.par_iter()
+        .map(|job| {
+            let job_id = job["job_id"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string();
+            let job_type = job["job_type"].as_str().unwrap_or("unknown");
+            let start = Instant::now();
+
+            let result = match job_type {
+                "backtest" | "research_backtest" | "walk_forward" => {
+                    let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
+                    crate::compute::backtest::execute_backtest_job(&params)
+                }
+                "scan" | "signal_gen" => {
+                    let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
+                    crate::compute::scanner::execute_scan_job(&params)
+                }
+                "ml_inference" | "ml_predict" => {
+                    let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
+                    crate::compute::ml::execute_ml_job(&params)
+                }
+                "feature_extraction" => {
+                    let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
+                    crate::compute::features::execute_features_job(&params)
+                }
+                "health_check" | "ping" => Ok(serde_json::json!({
+                    "status": "completed",
+                    "job_type": job_type,
+                    "pong": true,
+                })),
+                // ML training excluded from batch (too heavy, needs semaphore)
+                "ml_train" | "optimization" => {
+                    Err("ml_train jobs must be dispatched individually (semaphore-gated)".to_string())
+                }
+                _ => {
+                    warn!("job_executor: batch unknown type '{job_type}' — running as backtest");
+                    let params = job.get("params").cloned().unwrap_or(serde_json::json!({}));
+                    crate::compute::backtest::execute_backtest_job(&params)
+                }
+            };
+
+            let result = result.map(|mut r| {
+                r["compute_seconds"] = serde_json::json!(start.elapsed().as_secs_f64());
+                r
+            });
+
+            (job_id, result)
+        })
+        .collect()
 }

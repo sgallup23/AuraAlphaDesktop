@@ -1,8 +1,16 @@
 //! Backtest metrics — direct port of `_compute_metrics` from
 //! compute_worker.py lines 477-530.
+//!
+//! For large trade sets (1000+), aggregation steps (sum, variance, counting)
+//! use rayon parallel iterators. Cumulative drawdown remains sequential
+//! because each value depends on the previous.
 
 use super::types::{BacktestMetrics, Trade};
+use rayon::prelude::*;
 use std::collections::HashMap;
+
+/// Minimum trade count to justify rayon overhead for parallel aggregation.
+const PAR_TRADE_THRESHOLD: usize = 1000;
 
 /// Compute aggregate performance metrics from a list of trades.
 ///
@@ -18,31 +26,58 @@ pub fn compute_metrics(trades: &[Trade]) -> BacktestMetrics {
 
     let returns: Vec<f64> = trades.iter().map(|t| t.pnl_pct).collect();
     let n = returns.len();
-    let wins = returns.iter().filter(|&&r| r > 0.0).count();
+    let use_par = n >= PAR_TRADE_THRESHOLD;
 
-    // Mean return.
-    let avg_ret = returns.iter().sum::<f64>() / n as f64;
+    // Mean return, wins count, gross profit/loss — parallel for large sets.
+    let (wins, avg_ret, gross_profit, gross_loss) = if use_par {
+        let sum: f64 = returns.par_iter().sum();
+        let w = returns.par_iter().filter(|&&r| r > 0.0).count();
+        let gp: f64 = returns.par_iter().filter(|&&r| r > 0.0).sum();
+        let gl: f64 = returns.par_iter().filter(|&&r| r < 0.0).sum::<f64>().abs();
+        (w, sum / n as f64, gp, gl)
+    } else {
+        let sum: f64 = returns.iter().sum();
+        let w = returns.iter().filter(|&&r| r > 0.0).count();
+        let gp: f64 = returns.iter().filter(|&&r| r > 0.0).sum();
+        let gl: f64 = returns.iter().filter(|&&r| r < 0.0).sum::<f64>().abs();
+        (w, sum / n as f64, gp, gl)
+    };
 
-    // Sample std dev (ddof=1).
+    // Sample std dev (ddof=1) — parallel for large sets.
     let std_ret = if n > 1 {
-        let variance =
-            returns.iter().map(|&r| (r - avg_ret).powi(2)).sum::<f64>() / (n as f64 - 1.0);
+        let variance = if use_par {
+            returns.par_iter().map(|&r| (r - avg_ret).powi(2)).sum::<f64>() / (n as f64 - 1.0)
+        } else {
+            returns.iter().map(|&r| (r - avg_ret).powi(2)).sum::<f64>() / (n as f64 - 1.0)
+        };
         variance.sqrt()
     } else {
         1e-9
     };
 
-    // Downside std dev (ddof=1, only negative returns).
-    let neg_returns: Vec<f64> = returns.iter().filter(|&&r| r < 0.0).cloned().collect();
+    // Downside std dev (ddof=1, only negative returns) — parallel for large sets.
+    let neg_returns: Vec<f64> = if use_par {
+        returns.par_iter().filter(|&&r| r < 0.0).cloned().collect()
+    } else {
+        returns.iter().filter(|&&r| r < 0.0).cloned().collect()
+    };
     let downside = if !neg_returns.is_empty() {
         let neg_n = neg_returns.len();
         let neg_mean = neg_returns.iter().sum::<f64>() / neg_n as f64;
         if neg_n > 1 {
-            let neg_var = neg_returns
-                .iter()
-                .map(|&r| (r - neg_mean).powi(2))
-                .sum::<f64>()
-                / (neg_n as f64 - 1.0);
+            let neg_var = if use_par {
+                neg_returns
+                    .par_iter()
+                    .map(|&r| (r - neg_mean).powi(2))
+                    .sum::<f64>()
+                    / (neg_n as f64 - 1.0)
+            } else {
+                neg_returns
+                    .iter()
+                    .map(|&r| (r - neg_mean).powi(2))
+                    .sum::<f64>()
+                    / (neg_n as f64 - 1.0)
+            };
             neg_var.sqrt()
         } else {
             1e-9
@@ -53,10 +88,6 @@ pub fn compute_metrics(trades: &[Trade]) -> BacktestMetrics {
 
     let sharpe = avg_ret / (std_ret + 1e-9);
     let sortino = avg_ret / (downside + 1e-9);
-
-    // Profit factor.
-    let gross_profit: f64 = returns.iter().filter(|&&r| r > 0.0).sum();
-    let gross_loss: f64 = returns.iter().filter(|&&r| r < 0.0).sum::<f64>().abs();
     let profit_factor = gross_profit / (gross_loss + 1e-9);
 
     // Max drawdown via cumulative product.
@@ -74,13 +105,24 @@ pub fn compute_metrics(trades: &[Trade]) -> BacktestMetrics {
         peak.push(current_peak);
     }
 
-    let dd: Vec<f64> = cum
-        .iter()
-        .zip(peak.iter())
-        .map(|(&c, &p)| (c - p) / p)
-        .collect();
-
-    let max_dd = dd.iter().cloned().fold(0.0_f64, f64::min);
+    // Drawdown per bar — element-wise, safe to parallelize for large sets.
+    let (dd, max_dd) = if use_par && cum.len() >= PAR_TRADE_THRESHOLD {
+        let dd: Vec<f64> = cum
+            .par_iter()
+            .zip(peak.par_iter())
+            .map(|(&c, &p)| (c - p) / p)
+            .collect();
+        let max_dd = dd.par_iter().cloned().reduce(|| 0.0_f64, f64::min);
+        (dd, max_dd)
+    } else {
+        let dd: Vec<f64> = cum
+            .iter()
+            .zip(peak.iter())
+            .map(|(&c, &p)| (c - p) / p)
+            .collect();
+        let max_dd = dd.iter().cloned().fold(0.0_f64, f64::min);
+        (dd, max_dd)
+    };
 
     let total_ret = if !cum.is_empty() {
         cum[cum.len() - 1] - 1.0

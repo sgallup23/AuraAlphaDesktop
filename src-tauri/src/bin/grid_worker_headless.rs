@@ -17,6 +17,20 @@ async fn main() {
         .format_timestamp_millis()
         .init();
 
+    // Configure rayon global thread pool to use all available CPU cores.
+    let num_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    if let Err(e) = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cores)
+        .thread_name(|idx| format!("grid-rayon-{}", idx))
+        .build_global()
+    {
+        log::debug!("Rayon global pool already initialized: {}", e);
+    } else {
+        log::info!("Rayon global thread pool: {} threads", num_cores);
+    }
+
     // Parse CLI args
     let args: Vec<String> = std::env::args().collect();
     let redis_url = get_arg(&args, "--redis-url")

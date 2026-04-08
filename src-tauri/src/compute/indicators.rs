@@ -4,14 +4,25 @@
 //! same algorithm, same edge-case handling, same NaN propagation.
 //! Uses `f64::NAN` where Python uses `np.nan`.
 //!
-//! GPU-accelerated paths are available for SMA and EMA when:
+//! GPU-accelerated paths are available for SMA, EMA, RSI, and ATR when:
 //! 1. A GPU adapter is detected (Vulkan/Metal/DX12)
-//! 2. The dataset exceeds 1000 bars (amortizes GPU overhead)
-//! Use `compute_sma_auto` / `compute_ema_auto` for the adaptive path.
+//! 2. The dataset exceeds GPU_THRESHOLD bars (amortizes GPU overhead)
+//! Use `compute_sma_auto` / `compute_ema_auto` / `compute_rsi_auto` /
+//! `compute_atr_auto` for the adaptive path. Batch GPU variants
+//! (`gpu_batch_rsi`, `gpu_batch_atr`) are available for scanner workloads.
+//!
+//! Batch indicator functions use rayon to compute indicators for multiple
+//! symbols in parallel. Individual indicator computations (EMA, RSI, OBV)
+//! that have sequential dependencies remain single-threaded per symbol.
+
+use rayon::prelude::*;
 
 /// Minimum data length to prefer GPU over CPU.
 /// Lowered to 100 so grid jobs (~250 bars) use the GPU.
 pub const GPU_THRESHOLD: usize = 100;
+
+/// Minimum number of windows to justify rayon overhead for parallel SMA/BBands.
+const PAR_WINDOW_THRESHOLD: usize = 500;
 
 /// Compute Average True Range (ATR).
 ///
@@ -24,8 +35,9 @@ pub fn compute_atr(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -
     }
 
     // True Range: starts at index 1 (needs previous close).
-    // tr[i] corresponds to bar index i+1.
+    // Each TR[i] is independent — safe to compute in parallel.
     let tr: Vec<f64> = (1..n)
+        .into_par_iter()
         .map(|i| {
             let hl = highs[i] - lows[i];
             let hc = (highs[i] - closes[i - 1]).abs();
@@ -120,25 +132,50 @@ pub fn compute_bbands(
     std_mult: f64,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let n = closes.len();
-    let mut upper = vec![f64::NAN; n];
-    let mut middle = vec![f64::NAN; n];
-    let mut lower = vec![f64::NAN; n];
+    let valid_count = n - (period - 1);
 
-    for i in (period - 1)..n {
-        let window = &closes[(i + 1 - period)..=i];
-        let mean: f64 = window.iter().sum::<f64>() / period as f64;
+    // Parallelize window computations when there are enough windows.
+    if valid_count >= PAR_WINDOW_THRESHOLD {
+        // Compute all valid windows in parallel, then scatter into output arrays.
+        let results: Vec<(usize, f64, f64, f64)> = ((period - 1)..n)
+            .into_par_iter()
+            .map(|i| {
+                let window = &closes[(i + 1 - period)..=i];
+                let mean: f64 = window.iter().sum::<f64>() / period as f64;
+                let variance: f64 =
+                    window.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / period as f64;
+                let std_dev = variance.sqrt();
+                (i, mean + std_mult * std_dev, mean, mean - std_mult * std_dev)
+            })
+            .collect();
 
-        // Population standard deviation (ddof=0), matching np.std() default.
-        let variance: f64 =
-            window.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / period as f64;
-        let std_dev = variance.sqrt();
+        let mut upper = vec![f64::NAN; n];
+        let mut middle = vec![f64::NAN; n];
+        let mut lower = vec![f64::NAN; n];
+        for (i, u, m, l) in results {
+            upper[i] = u;
+            middle[i] = m;
+            lower[i] = l;
+        }
+        (upper, middle, lower)
+    } else {
+        let mut upper = vec![f64::NAN; n];
+        let mut middle = vec![f64::NAN; n];
+        let mut lower = vec![f64::NAN; n];
 
-        middle[i] = mean;
-        upper[i] = mean + std_mult * std_dev;
-        lower[i] = mean - std_mult * std_dev;
+        for i in (period - 1)..n {
+            let window = &closes[(i + 1 - period)..=i];
+            let mean: f64 = window.iter().sum::<f64>() / period as f64;
+            let variance: f64 =
+                window.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / period as f64;
+            let std_dev = variance.sqrt();
+
+            middle[i] = mean;
+            upper[i] = mean + std_mult * std_dev;
+            lower[i] = mean - std_mult * std_dev;
+        }
+        (upper, middle, lower)
     }
-
-    (upper, middle, lower)
 }
 
 /// Compute Simple Moving Average (SMA).
@@ -146,14 +183,31 @@ pub fn compute_bbands(
 /// Port of `_compute_sma` (compute_worker.py:154-160).
 pub fn compute_sma(data: &[f64], period: usize) -> Vec<f64> {
     let n = data.len();
-    let mut sma = vec![f64::NAN; n];
+    let valid_count = if n >= period { n - (period - 1) } else { 0 };
 
-    for i in (period - 1)..n {
-        let window = &data[(i + 1 - period)..=i];
-        sma[i] = window.iter().sum::<f64>() / period as f64;
+    // Parallelize window computations when there are enough windows.
+    if valid_count >= PAR_WINDOW_THRESHOLD {
+        let results: Vec<(usize, f64)> = ((period - 1)..n)
+            .into_par_iter()
+            .map(|i| {
+                let window = &data[(i + 1 - period)..=i];
+                (i, window.iter().sum::<f64>() / period as f64)
+            })
+            .collect();
+
+        let mut sma = vec![f64::NAN; n];
+        for (i, val) in results {
+            sma[i] = val;
+        }
+        sma
+    } else {
+        let mut sma = vec![f64::NAN; n];
+        for i in (period - 1)..n {
+            let window = &data[(i + 1 - period)..=i];
+            sma[i] = window.iter().sum::<f64>() / period as f64;
+        }
+        sma
     }
-
-    sma
 }
 
 /// Compute On-Balance Volume (OBV).
@@ -175,6 +229,76 @@ pub fn compute_obv(closes: &[f64], volumes: &[f64]) -> Vec<f64> {
     }
 
     obv
+}
+
+// ── Batch indicator computation (rayon across symbols) ────────────────
+
+/// Result of computing all standard indicators for a single symbol.
+pub struct IndicatorBatch {
+    pub atr: Vec<f64>,
+    pub ema_fast: Vec<f64>,
+    pub ema_slow: Vec<f64>,
+    pub rsi: Vec<f64>,
+    pub sma: Vec<f64>,
+    pub vol_sma: Vec<f64>,
+    pub obv: Vec<f64>,
+    pub bb_upper: Vec<f64>,
+    pub bb_middle: Vec<f64>,
+    pub bb_lower: Vec<f64>,
+}
+
+/// Compute all standard indicators for multiple symbols in parallel.
+///
+/// Each element in `symbol_data` is (closes, highs, lows, volumes) for one symbol.
+/// Returns one `IndicatorBatch` per symbol, computed across all CPU cores via rayon.
+/// This avoids the overhead of spawning rayon work per indicator per symbol and
+/// instead parallelizes at the symbol level (coarser granularity = less overhead).
+pub fn compute_indicators_batch(
+    symbol_data: &[(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)],
+    atr_period: usize,
+    ema_fast_period: usize,
+    ema_slow_period: usize,
+    rsi_period: usize,
+    sma_period: usize,
+    vol_sma_period: usize,
+    bbands_period: usize,
+    bbands_std: f64,
+) -> Vec<IndicatorBatch> {
+    symbol_data
+        .par_iter()
+        .map(|(closes, highs, lows, volumes)| {
+            let n = closes.len();
+            let has_volume = volumes.iter().any(|&v| v > 0.0);
+
+            let vol_sma = if has_volume {
+                compute_sma(volumes, vol_sma_period)
+            } else {
+                vec![f64::NAN; n]
+            };
+
+            let obv = if has_volume {
+                compute_obv(closes, volumes)
+            } else {
+                vec![0.0; n]
+            };
+
+            let (bb_upper, bb_middle, bb_lower) =
+                compute_bbands(closes, bbands_period, bbands_std);
+
+            IndicatorBatch {
+                atr: compute_atr(highs, lows, closes, atr_period),
+                ema_fast: compute_ema(closes, ema_fast_period),
+                ema_slow: compute_ema(closes, ema_slow_period),
+                rsi: compute_rsi(closes, rsi_period),
+                sma: compute_sma(closes, sma_period),
+                vol_sma,
+                obv,
+                bb_upper,
+                bb_middle,
+                bb_lower,
+            }
+        })
+        .collect()
 }
 
 // ── GPU-accelerated indicator wrappers ────────────────────────────────
@@ -206,6 +330,40 @@ pub async fn compute_ema_auto(data: &[f64], period: usize) -> Vec<f64> {
         }
     }
     compute_ema(data, period)
+}
+
+/// Compute RSI with automatic GPU/CPU selection.
+///
+/// RSI is sequential (Wilder smoothing), so GPU speedup is modest for
+/// single-symbol calls. The real win comes from `gpu_batch_rsi` in the
+/// scanner where 600+ symbols are dispatched in one GPU call.
+pub async fn compute_rsi_auto(closes: &[f64], period: usize) -> Vec<f64> {
+    if closes.len() >= GPU_THRESHOLD && super::gpu::is_gpu_available() {
+        if let Some(result) = super::gpu::gpu_compute_rsi(closes, period).await {
+            log::debug!("RSI computed on GPU ({} bars, period {})", closes.len(), period);
+            return result;
+        }
+    }
+    compute_rsi(closes, period)
+}
+
+/// Compute ATR with automatic GPU/CPU selection.
+///
+/// ATR needs high/low/close arrays. The GPU path packs them into a single
+/// buffer and uses a scratch buffer for True Range intermediates.
+pub async fn compute_atr_auto(
+    highs: &[f64],
+    lows: &[f64],
+    closes: &[f64],
+    period: usize,
+) -> Vec<f64> {
+    if highs.len() >= GPU_THRESHOLD && super::gpu::is_gpu_available() {
+        if let Some(result) = super::gpu::gpu_compute_atr(highs, lows, closes, period).await {
+            log::debug!("ATR computed on GPU ({} bars, period {})", highs.len(), period);
+            return result;
+        }
+    }
+    compute_atr(highs, lows, closes, period)
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────

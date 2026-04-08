@@ -35,7 +35,8 @@ sha2 = "0.10"
 aes-gcm = "0.10"
 rand = "0.8"
 rayon = "1.10"
-polars = { version = "0.46", features = ["parquet", "csv", "lazy"] }
+polars = { version = "0.46", features = ["parquet", "csv", "lazy", "cloud"] }
+lru = "0.12"
 smartcore = { version = "0.4", features = ["serde"] }
 bytemuck = { version = "1", features = ["derive"] }
 env_logger = "0.11"

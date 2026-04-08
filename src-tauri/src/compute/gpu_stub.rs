@@ -47,7 +47,35 @@ pub async fn gpu_compute_ema(_data: &[f64], _period: usize) -> Option<Vec<f64>> 
 }
 
 /// Always None — GPU feature not compiled in.
+pub async fn gpu_compute_rsi(_closes: &[f64], _period: usize) -> Option<Vec<f64>> {
+    None
+}
+
+/// Always None — GPU feature not compiled in.
+pub async fn gpu_compute_atr(
+    _highs: &[f64],
+    _lows: &[f64],
+    _closes: &[f64],
+    _period: usize,
+) -> Option<Vec<f64>> {
+    None
+}
+
+/// Always None — GPU feature not compiled in.
 pub async fn gpu_batch_sma(_datasets: &[&[f64]], _period: usize) -> Option<Vec<Vec<f64>>> {
+    None
+}
+
+/// Always None — GPU feature not compiled in.
+pub async fn gpu_batch_rsi(_datasets: &[&[f64]], _period: usize) -> Option<Vec<Vec<f64>>> {
+    None
+}
+
+/// Always None — GPU feature not compiled in.
+pub async fn gpu_batch_atr(
+    _datasets: &[(&[f64], &[f64], &[f64])],
+    _period: usize,
+) -> Option<Vec<Vec<f64>>> {
     None
 }
 

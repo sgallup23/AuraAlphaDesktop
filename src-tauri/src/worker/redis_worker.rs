@@ -29,6 +29,11 @@ struct JobResult {
 }
 
 /// Run the Redis-backed grid worker with feeder/worker/reporter architecture.
+///
+/// Connection pooling: a single `MultiplexedConnection` is cloned (cheaply)
+/// to feeder, heartbeat, and reporter tasks. Redis `MultiplexedConnection`
+/// is designed for concurrent use -- it multiplexes commands over one TCP
+/// socket, so cloning is ~free and avoids opening multiple sockets.
 pub async fn run_redis_worker(
     redis_url: String,
     api_url: String,
@@ -44,7 +49,9 @@ pub async fn run_redis_worker(
 
     let start_time = Instant::now();
 
-    // Connect to Redis
+    // Connect to Redis — single multiplexed connection shared across all tasks.
+    // MultiplexedConnection is Clone + Send + Sync and pipelines commands
+    // over one TCP socket, so there's no need for a separate pool.
     let redis_client = match redis::Client::open(redis_url.as_str()) {
         Ok(c) => c,
         Err(e) => {
@@ -53,18 +60,20 @@ pub async fn run_redis_worker(
         }
     };
 
-    let mut redis_conn = match redis_client.get_multiplexed_async_connection().await {
+    let redis_conn = match redis_client.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
             error!("redis_worker: Redis connection failed: {e}");
             return;
         }
     };
-    info!("redis_worker: connected to Redis");
+    info!("redis_worker: connected to Redis (multiplexed, shared across tasks)");
 
-    // Build HTTP client for reporting completions
+    // Build HTTP client for reporting completions — connection pool is
+    // built-in to reqwest::Client (default: unlimited idle connections).
     let http_client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
+        .pool_max_idle_per_host(4)
         .build()
     {
         Ok(c) => c,
@@ -94,45 +103,43 @@ pub async fn run_redis_worker(
 
     // ─── Feeder Task ────────────────────────────────────────────
     let feeder_shutdown = shutdown.clone();
-    let feeder_redis = redis_client.clone();
     let feeder_worker_id = worker_id.clone();
     let feeder_in_flight = in_flight.clone();
+    // Share the multiplexed connection -- no new socket needed.
+    let mut feeder_conn = redis_conn.clone();
 
     let feeder_handle = tokio::spawn(async move {
-        let mut conn = match feeder_redis.get_multiplexed_async_connection().await {
-            Ok(c) => c,
-            Err(e) => {
-                error!("redis_worker/feeder: Redis connection failed: {e}");
-                return;
-            }
-        };
+        let mut conn = feeder_conn;
 
-        let mut idle_backoff = Duration::from_secs(2);
-        let max_backoff = Duration::from_secs(30);
+        let mut idle_backoff = Duration::from_secs(1);
+        let max_backoff = Duration::from_secs(15);
 
         loop {
-            // Check shutdown
+            // Check shutdown (non-blocking via zero-duration sleep)
             tokio::select! {
                 biased;
                 _ = feeder_shutdown.notified() => {
                     info!("redis_worker/feeder: shutdown");
                     break;
                 }
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(0)) => {}
             }
 
-            // Check if workers have capacity for more jobs
+            // Check if workers have capacity for more jobs.
+            // Use channel remaining capacity as the primary signal --
+            // it accounts for both in-flight and queued-but-not-started jobs.
             let current_flight = feeder_in_flight.load(Ordering::Relaxed) as u32;
             let available = max_parallel.saturating_sub(current_flight);
-            // channel capacity() returns REMAINING space (high = empty, low = full)
             let channel_remaining = job_tx.capacity();
 
-            if available == 0 {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+            if available == 0 || channel_remaining == 0 {
+                // Workers saturated or channel full -- short wait
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             }
 
-            let fetch_count = available.min(batch_size);
+            // Fetch up to channel capacity or batch_size, whichever is smaller
+            let fetch_count = (channel_remaining as u32).min(batch_size).min(available * 2);
 
             // ZPOPMIN from Redis ready queue
             let claimed: Result<Vec<(String, f64)>, _> = redis::cmd("ZPOPMIN")
@@ -205,13 +212,13 @@ pub async fn run_redis_worker(
                     }
                 }
                 Ok(_) => {
-                    // Queue empty — backoff
+                    // Queue empty — backoff with jitter
                     tokio::time::sleep(idle_backoff).await;
                     idle_backoff = (idle_backoff * 2).min(max_backoff);
                 }
                 Err(e) => {
                     warn!("redis_worker/feeder: ZPOPMIN failed: {e}");
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
         }
@@ -309,13 +316,14 @@ pub async fn run_redis_worker(
     let reporter_api_url = api_url.clone();
     let reporter_token = token.clone();
     let reporter_worker_id = worker_id.clone();
-    let reporter_redis = redis_client.clone();
+    // Share the multiplexed connection -- no new socket per flush.
+    let mut reporter_conn = redis_conn.clone();
 
     let reporter_handle = tokio::spawn(async move {
         let mut result_rx = result_rx;
         let mut batch: Vec<JobResult> = Vec::with_capacity(50);
         let mut last_flush = Instant::now();
-        let flush_interval = Duration::from_secs(2);
+        let flush_interval = Duration::from_secs(1); // Faster flush for throughput
 
         loop {
             // Collect results with timeout
@@ -327,8 +335,8 @@ pub async fn run_redis_worker(
                         None => {
                             // Channel closed — flush remaining
                             if !batch.is_empty() {
-                                flush_batch(&http_client, &reporter_api_url, &reporter_token,
-                                    &reporter_redis, &mut batch).await;
+                                flush_batch_conn(&http_client, &reporter_api_url, &reporter_token,
+                                    &mut reporter_conn, &mut batch).await;
                             }
                             break;
                         }
@@ -339,8 +347,8 @@ pub async fn run_redis_worker(
 
             // Flush when batch full or interval elapsed
             if batch.len() >= 50 || (last_flush.elapsed() >= flush_interval && !batch.is_empty()) {
-                flush_batch(&http_client, &reporter_api_url, &reporter_token,
-                    &reporter_redis, &mut batch).await;
+                flush_batch_conn(&http_client, &reporter_api_url, &reporter_token,
+                    &mut reporter_conn, &mut batch).await;
                 last_flush = Instant::now();
             }
         }
@@ -348,17 +356,15 @@ pub async fn run_redis_worker(
 
     // ─── Heartbeat Task ─────────────────────────────────────────
     let hb_shutdown = shutdown.clone();
-    let hb_redis = redis_client.clone();
     let hb_flight_ids = in_flight_ids.clone();
     let hb_status = status.clone();
     let hb_completed = jobs_completed.clone();
     let hb_failed = jobs_failed.clone();
+    // Share the multiplexed connection -- no new socket needed.
+    let mut hb_conn = redis_conn.clone();
 
     let hb_handle = tokio::spawn(async move {
-        let mut conn = match hb_redis.get_multiplexed_async_connection().await {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+        let mut conn = hb_conn;
 
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {

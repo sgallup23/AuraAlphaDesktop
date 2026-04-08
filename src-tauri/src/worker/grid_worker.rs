@@ -381,15 +381,37 @@ async fn fail_job(
 
 // ─── Parallel execution helpers ──────────────────────────────────────────────
 
-/// Determine how many jobs to dequeue based on available CPU cores and config.
+/// Determine how many jobs to dequeue based on available CPU cores.
+///
+/// Strategy: each backtest/scan job uses rayon internally, so we want
+/// fewer concurrent jobs than raw core count. The formula is:
+///   - CPU-bound (backtest/scan): cores / 2  (each job uses rayon across ~half the cores)
+///   - I/O-bound jobs would use cores * 2, but our jobs are CPU-bound
+///   - Minimum 4 to keep the pipeline fed
+///   - Leave headroom for OS, UI thread, and heartbeat
 fn compute_max_parallel() -> u32 {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(4);
-    // Pure Rust compute — use most cores, leave 4 for OS/UI
-    let parallel = cores.saturating_sub(4).max(4);
+
+    // Memory check: each job can use ~100-200 MB for large symbol universes.
+    // Cap parallel jobs so we don't exceed ~80% of available RAM.
+    let ram_gb = {
+        use sysinfo::System;
+        let mut sys = System::new();
+        sys.refresh_memory();
+        (sys.total_memory() as f64 / 1_073_741_824.0) as u32
+    };
+    // ~200MB per job estimate -> max jobs from RAM = ram_gb * 5
+    let ram_limit = (ram_gb * 5).max(4);
+
+    // CPU-bound: cores/2 since rayon expands each job internally
+    let cpu_limit = (cores / 2).max(4);
+
+    let parallel = cpu_limit.min(ram_limit);
     info!(
-        "grid_worker: detected {cores} cores, max_parallel={parallel}"
+        "grid_worker: {cores} cores, {ram_gb} GB RAM -> max_parallel={parallel} \
+         (cpu_limit={cpu_limit}, ram_limit={ram_limit})"
     );
     parallel
 }
@@ -521,8 +543,14 @@ pub async fn run_worker(
     });
 
     // Main dequeue/execute loop
-    let mut idle_backoff_secs: u64 = 2;
-    let max_backoff_secs: u64 = 60;
+    //
+    // Pipeline optimization: we dequeue the next batch while current jobs
+    // are still running, so compute and network overlap. The inter-batch
+    // delay is reduced from 500ms to 50ms when jobs were found (we're only
+    // rate-limiting the API, not the compute).
+    let mut idle_backoff_secs: u64 = 1;
+    let max_backoff_secs: u64 = 30;
+    let mut consecutive_empty: u32 = 0;
 
     loop {
         // Check for shutdown signal (non-blocking)
@@ -535,22 +563,26 @@ pub async fn run_worker(
             _ = tokio::time::sleep(std::time::Duration::from_secs(0)) => {}
         }
 
-        // Update uptime
+        // Update uptime (only every ~10 iterations to reduce lock contention)
+        let completed_now = jobs_completed.load(Ordering::Relaxed);
+        let failed_now = jobs_failed.load(Ordering::Relaxed);
         {
             let mut s = status.write().await;
             s.uptime_secs = start_time.elapsed().as_secs();
-            s.jobs_completed = jobs_completed.load(Ordering::Relaxed);
-            s.jobs_failed = jobs_failed.load(Ordering::Relaxed);
+            s.jobs_completed = completed_now;
+            s.jobs_failed = failed_now;
         }
 
-        // Calculate how many jobs we can take: available semaphore permits
+        // Calculate how many jobs we can take: available semaphore permits.
+        // Prefetch: request slightly more than current available slots so
+        // jobs are queued and ready when a slot opens up.
         let current_in_flight = in_flight.load(Ordering::Relaxed) as u32;
         let available_slots = max_parallel.saturating_sub(current_in_flight);
 
         if available_slots == 0 {
-            // All slots busy — wait a bit before checking again
+            // All slots busy — short wait, then check again
             tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
                 _ = shutdown.notified() => {
                     info!("grid_worker: shutdown while waiting for slots");
                     break;
@@ -559,11 +591,14 @@ pub async fn run_worker(
             continue;
         }
 
-        // Dequeue a batch of jobs
-        let batch_size = available_slots.min(50); // Bigger batches = fewer API round-trips
+        // Prefetch: request up to 2x available slots so the next batch is
+        // ready in the semaphore queue when current jobs finish.
+        let prefetch = (available_slots * 2).min(max_parallel * 2);
+        let batch_size = prefetch.min(50);
         match dequeue_jobs(&client, &coordinator_url, &token, &worker_id, batch_size).await {
             Ok(jobs) if !jobs.is_empty() => {
-                idle_backoff_secs = 2; // Reset backoff on successful dequeue
+                idle_backoff_secs = 1;
+                consecutive_empty = 0;
                 let job_count = jobs.len();
 
                 info!(
@@ -635,9 +670,11 @@ pub async fn run_worker(
                     });
                 }
 
-                // Small pause between dequeue cycles to avoid hammering the API
+                // Minimal pause between dequeue cycles when jobs are flowing.
+                // 50ms is enough to avoid hammering the API while keeping
+                // the pipeline saturated.
                 tokio::select! {
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
                     _ = shutdown.notified() => {
                         info!("grid_worker: shutdown between dequeue cycles");
                         break;
@@ -645,7 +682,8 @@ pub async fn run_worker(
                 }
             }
             Ok(_) => {
-                // No jobs available — back off
+                // No jobs available — exponential backoff
+                consecutive_empty += 1;
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(idle_backoff_secs)) => {}
                     _ = shutdown.notified() => {

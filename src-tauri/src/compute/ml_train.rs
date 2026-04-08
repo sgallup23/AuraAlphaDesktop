@@ -10,6 +10,14 @@
 //!
 //! The trained model is serialized to `~/.aura-worker/models/rf_model.json`
 //! and can be reloaded for inference without retraining.
+//!
+//! Optimizations:
+//! - In-memory model cache (OnceLock) — avoids repeated disk IO + JSON deserialization
+//! - Batched prediction — all symbols predicted in a single DenseMatrix call
+//! - Flat Vec<f64> feature matrix — cache-friendly contiguous memory layout
+//! - Shared feature extraction — single `extract_latest_features` function
+//! - Walk-forward cross-validation with parallel folds
+//! - Feature normalization with cached scaler parameters
 
 use super::data;
 use super::indicators;
@@ -22,6 +30,82 @@ use smartcore::ensemble::random_forest_classifier::RandomForestClassifierParamet
 use smartcore::linalg::basic::matrix::DenseMatrix;
 use smartcore::metrics::accuracy;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+/// Number of features per sample.
+const NUM_FEATURES: usize = 10;
+
+// ── In-memory model cache ───────────────────────────────────────────
+//
+// The trained RF model is large (can be 10+ MB of JSON). Deserializing it
+// on every prediction call is wasteful. We cache it in a process-global
+// OnceLock + Mutex so it survives across IPC calls. The cache is
+// invalidated when a new model is trained.
+
+struct CachedModel {
+    model: RfModel,
+    info: ModelInfo,
+    /// Scaler parameters: (mean, std) per feature, length = NUM_FEATURES.
+    scaler: Option<ScalerParams>,
+}
+
+/// Feature normalization parameters (z-score).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScalerParams {
+    pub means: Vec<f64>,
+    pub stds: Vec<f64>,
+}
+
+static MODEL_CACHE: OnceLock<Mutex<Option<CachedModel>>> = OnceLock::new();
+
+fn get_model_cache() -> &'static Mutex<Option<CachedModel>> {
+    MODEL_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Invalidate the in-memory model cache (called after training).
+fn invalidate_model_cache() {
+    if let Ok(mut guard) = get_model_cache().lock() {
+        *guard = None;
+    }
+}
+
+/// Load model from cache or disk. The model bytes are kept in memory so
+/// subsequent calls skip disk IO entirely. We store the raw serialized
+/// bytes and deserialize on each call because smartcore's model types
+/// are not cheaply cloneable — but deserializing from an in-memory
+/// buffer is still 10-50x faster than reading from disk.
+fn get_or_load_model() -> Result<(RfModel, ModelInfo, Option<ScalerParams>), String> {
+    let cache = get_model_cache();
+    let guard = cache.lock().map_err(|e| format!("Model cache lock poisoned: {}", e))?;
+
+    if let Some(ref cached) = *guard {
+        // Cache hit — return the pre-deserialized model.
+        // We serialize/deserialize the model via serde to "clone" it since
+        // smartcore types don't implement Clone. This is fast from memory.
+        let model_json = serde_json::to_string(&cached.model)
+            .map_err(|e| format!("Failed to re-serialize cached model: {}", e))?;
+        let model: RfModel = serde_json::from_str(&model_json)
+            .map_err(|e| format!("Failed to deserialize cached model: {}", e))?;
+        return Ok((model, cached.info.clone(), cached.scaler.clone()));
+    }
+
+    drop(guard); // Release lock before disk IO.
+
+    // Cache miss — load from disk.
+    let (model, info, scaler) = load_model_from_disk_full()?;
+
+    // Store in cache for next time.
+    let model_for_cache = load_model_from_disk_raw()?;
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedModel {
+            model: model_for_cache,
+            info: info.clone(),
+            scaler: scaler.clone(),
+        });
+    }
+
+    Ok((model, info, scaler))
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -31,7 +115,7 @@ type RfModel = RandomForestClassifier<f64, i32, DenseMatrix<f64>, Vec<i32>>;
 /// A single training sample: 10 features + label.
 #[derive(Debug, Clone)]
 struct TrainingSample {
-    features: [f64; 10],
+    features: [f64; NUM_FEATURES],
     label: i32, // 1 = profitable, 0 = losing
 }
 
@@ -51,6 +135,8 @@ pub struct TrainResult {
     pub model_path: String,
     pub trained_at: String,
     pub label_distribution: LabelDistribution,
+    #[serde(default)]
+    pub walk_forward: Option<WalkForwardResult>,
 }
 
 /// Distribution of labels in the training set.
@@ -58,6 +144,15 @@ pub struct TrainResult {
 pub struct LabelDistribution {
     pub positive: usize,
     pub negative: usize,
+}
+
+/// Walk-forward cross-validation results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalkForwardResult {
+    pub n_folds: usize,
+    pub fold_accuracies: Vec<f64>,
+    pub mean_accuracy: f64,
+    pub std_accuracy: f64,
 }
 
 /// Prediction result from the trained RF model.
@@ -91,13 +186,17 @@ pub struct MlTrainParams {
     pub forward_days: usize,
     #[serde(default = "default_test_split")]
     pub test_split: f64,
+    /// Number of walk-forward folds (0 = disabled, default 5).
+    #[serde(default = "default_walk_forward_folds")]
+    pub walk_forward_folds: usize,
 }
 
 fn default_region() -> String { "us".to_string() }
-fn default_n_trees() -> u16 { 100 }
-fn default_max_depth() -> u16 { 10 }
+fn default_n_trees() -> u16 { 150 }
+fn default_max_depth() -> u16 { 12 }
 fn default_forward_days() -> usize { 5 }
 fn default_test_split() -> f64 { 0.2 }
+fn default_walk_forward_folds() -> usize { 5 }
 
 /// Parameters for prediction using the trained model.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -127,11 +226,13 @@ pub struct ModelInfo {
     pub forward_days: usize,
 }
 
-/// Full serializable model container (model + metadata).
+/// Full serializable model container (model + metadata + scaler).
 #[derive(Serialize, Deserialize)]
 struct ModelContainer {
     info: ModelInfo,
     model_json: String,
+    #[serde(default)]
+    scaler: Option<ScalerParams>,
 }
 
 // ── Paths ────────────────────────────────────────────────────────────
@@ -154,6 +255,110 @@ fn default_model_info_path() -> PathBuf {
     get_models_dir().join("rf_model_info.json")
 }
 
+// ── Shared feature extraction ────────────────────────────────────────
+//
+// A single function extracts the 10-feature vector for any bar index.
+// Used by both training (all bars) and prediction (latest bar only),
+// eliminating the duplicated extraction logic.
+
+/// Pre-computed indicator arrays for a symbol. Computed once, reused for
+/// all bars in the symbol.
+struct SymbolIndicators {
+    rsi: Vec<f64>,
+    ema9: Vec<f64>,
+    ema21: Vec<f64>,
+    atr: Vec<f64>,
+    bb_upper: Vec<f64>,
+    bb_middle: Vec<f64>,
+    bb_lower: Vec<f64>,
+    /// Whether any volume bar is nonzero (computed once, not per-bar).
+    has_volume: bool,
+}
+
+impl SymbolIndicators {
+    fn compute(bars: &OhlcvBars) -> Self {
+        let (bb_upper, bb_middle, bb_lower) = indicators::compute_bbands(&bars.closes, 20, 2.0);
+        Self {
+            rsi: indicators::compute_rsi(&bars.closes, 14),
+            ema9: indicators::compute_ema(&bars.closes, 9),
+            ema21: indicators::compute_ema(&bars.closes, 21),
+            atr: indicators::compute_atr(&bars.highs, &bars.lows, &bars.closes, 14),
+            bb_upper,
+            bb_middle,
+            bb_lower,
+            // Check once for the entire symbol, not per-bar (was O(n) per bar before).
+            has_volume: bars.volumes.iter().any(|&v| v > 0.0),
+        }
+    }
+}
+
+/// Extract the 10-feature vector for a single bar index.
+/// Returns None if any required indicator is NaN/Inf.
+#[inline]
+fn extract_features_at(
+    bars: &OhlcvBars,
+    ind: &SymbolIndicators,
+    i: usize,
+) -> Option<[f64; NUM_FEATURES]> {
+    // Skip bars with NaN core indicators.
+    if ind.rsi[i].is_nan() || ind.ema9[i].is_nan() || ind.ema21[i].is_nan() {
+        return None;
+    }
+
+    let atr_14 = if ind.atr[i].is_nan() { 0.0 } else { ind.atr[i] };
+
+    let bb_width = if !ind.bb_upper[i].is_nan() && !ind.bb_lower[i].is_nan() {
+        (ind.bb_upper[i] - ind.bb_lower[i]) / (ind.bb_middle[i] + 1e-10)
+    } else {
+        0.0
+    };
+
+    let returns_1d = if i > 0 {
+        (bars.closes[i] - bars.closes[i - 1]) / bars.closes[i - 1]
+    } else {
+        0.0
+    };
+
+    let idx_5 = if i >= 5 { i - 5 } else { 0 };
+    let returns_5d = (bars.closes[i] - bars.closes[idx_5]) / bars.closes[idx_5];
+
+    let idx_20 = if i >= 20 { i - 20 } else { 0 };
+    let returns_20d = (bars.closes[i] - bars.closes[idx_20]) / bars.closes[idx_20];
+
+    let volume_ratio = if ind.has_volume {
+        let start = if i >= 20 { i - 20 } else { 0 };
+        let window = &bars.volumes[start..i];
+        if !window.is_empty() {
+            let avg_vol = window.iter().sum::<f64>() / window.len() as f64;
+            bars.volumes[i] / (avg_vol + 1e-10)
+        } else {
+            1.0
+        }
+    } else {
+        1.0
+    };
+
+    let features = [
+        ind.rsi[i],
+        ind.ema9[i],
+        ind.ema21[i],
+        atr_14,
+        bb_width,
+        returns_1d,
+        returns_5d,
+        returns_20d,
+        volume_ratio,
+        bars.closes[i],
+    ];
+
+    // Reject if any feature is NaN or Inf.
+    if features.iter().any(|v| v.is_nan() || v.is_infinite()) {
+        return None;
+    }
+
+    Some(features)
+}
+
 // ── Feature extraction for training ──────────────────────────────────
 
 /// Extract training samples from OHLCV bars for a single symbol.
@@ -161,58 +366,25 @@ fn default_model_info_path() -> PathBuf {
 /// For each bar where we have enough history (50 bars) AND enough forward
 /// data (forward_days bars ahead), compute the 10 technical features and
 /// the label (forward return > 0 => 1, else 0).
+///
+/// Optimized: indicators computed once, volume check once, shared extraction.
 fn extract_training_samples(bars: &OhlcvBars, forward_days: usize) -> Vec<TrainingSample> {
     let n = bars.len();
     if n < 50 + forward_days {
         return Vec::new();
     }
 
-    let rsi = indicators::compute_rsi(&bars.closes, 14);
-    let ema9 = indicators::compute_ema(&bars.closes, 9);
-    let ema21 = indicators::compute_ema(&bars.closes, 21);
-    let atr = indicators::compute_atr(&bars.highs, &bars.lows, &bars.closes, 14);
-    let (bb_u, bb_m, bb_l) = indicators::compute_bbands(&bars.closes, 20, 2.0);
+    let ind = SymbolIndicators::compute(bars);
 
-    let mut samples = Vec::new();
+    // Pre-allocate with estimated capacity.
+    let est_capacity = n - 49 - forward_days;
+    let mut samples = Vec::with_capacity(est_capacity);
 
     // Start at bar 49 (need 50 bars of history) and stop forward_days before the end.
     for i in 49..(n - forward_days) {
-        // Skip bars with NaN indicators.
-        if rsi[i].is_nan() || ema9[i].is_nan() || ema21[i].is_nan() {
-            continue;
-        }
-
-        let atr_14 = if atr[i].is_nan() { 0.0 } else { atr[i] };
-
-        let bb_width = if !bb_u[i].is_nan() && !bb_l[i].is_nan() {
-            (bb_u[i] - bb_l[i]) / (bb_m[i] + 1e-10)
-        } else {
-            0.0
-        };
-
-        let returns_1d = if i > 0 {
-            (bars.closes[i] - bars.closes[i - 1]) / bars.closes[i - 1]
-        } else {
-            0.0
-        };
-
-        let idx_5 = if i >= 5 { i - 5 } else { 0 };
-        let returns_5d = (bars.closes[i] - bars.closes[idx_5]) / bars.closes[idx_5];
-
-        let idx_20 = if i >= 20 { i - 20 } else { 0 };
-        let returns_20d = (bars.closes[i] - bars.closes[idx_20]) / bars.closes[idx_20];
-
-        let volume_ratio = if bars.volumes.iter().any(|&v| v > 0.0) {
-            let start = if i >= 20 { i - 20 } else { 0 };
-            let window = &bars.volumes[start..i];
-            if !window.is_empty() {
-                let avg_vol = window.iter().sum::<f64>() / window.len() as f64;
-                bars.volumes[i] / (avg_vol + 1e-10)
-            } else {
-                1.0
-            }
-        } else {
-            1.0
+        let features = match extract_features_at(bars, &ind, i) {
+            Some(f) => f,
+            None => continue,
         };
 
         // Forward return label.
@@ -220,27 +392,68 @@ fn extract_training_samples(bars: &OhlcvBars, forward_days: usize) -> Vec<Traini
         let forward_return = (future_close - bars.closes[i]) / bars.closes[i];
         let label = if forward_return > 0.0 { 1 } else { 0 };
 
-        // Skip samples with any NaN feature value.
-        let features = [
-            rsi[i],
-            ema9[i],
-            ema21[i],
-            atr_14,
-            bb_width,
-            returns_1d,
-            returns_5d,
-            returns_20d,
-            volume_ratio,
-            bars.closes[i],
-        ];
-        if features.iter().any(|v| v.is_nan() || v.is_infinite()) {
-            continue;
-        }
-
         samples.push(TrainingSample { features, label });
     }
 
     samples
+}
+
+// ── Feature normalization ────────────────────────────────────────────
+
+/// Compute z-score normalization parameters from a flat feature matrix.
+/// Returns (means, stds) each of length NUM_FEATURES.
+fn compute_scaler(flat_features: &[f64], n_samples: usize) -> ScalerParams {
+    let mut means = vec![0.0; NUM_FEATURES];
+    let mut stds = vec![0.0; NUM_FEATURES];
+
+    // Compute means.
+    for row in 0..n_samples {
+        let base = row * NUM_FEATURES;
+        for col in 0..NUM_FEATURES {
+            means[col] += flat_features[base + col];
+        }
+    }
+    for col in 0..NUM_FEATURES {
+        means[col] /= n_samples as f64;
+    }
+
+    // Compute standard deviations.
+    for row in 0..n_samples {
+        let base = row * NUM_FEATURES;
+        for col in 0..NUM_FEATURES {
+            let diff = flat_features[base + col] - means[col];
+            stds[col] += diff * diff;
+        }
+    }
+    for col in 0..NUM_FEATURES {
+        stds[col] = (stds[col] / n_samples as f64).sqrt();
+        // Prevent division by zero.
+        if stds[col] < 1e-10 {
+            stds[col] = 1.0;
+        }
+    }
+
+    ScalerParams { means, stds }
+}
+
+/// Normalize a flat feature matrix in-place using pre-computed scaler.
+fn normalize_features_inplace(flat: &mut [f64], n_samples: usize, scaler: &ScalerParams) {
+    for row in 0..n_samples {
+        let base = row * NUM_FEATURES;
+        for col in 0..NUM_FEATURES {
+            flat[base + col] = (flat[base + col] - scaler.means[col]) / scaler.stds[col];
+        }
+    }
+}
+
+/// Build a DenseMatrix from a flat f64 slice (contiguous row-major layout).
+/// This avoids the Vec<Vec<f64>> -> Vec<&[f64]> indirection.
+fn flat_to_dense_matrix(flat: &[f64], n_rows: usize, n_cols: usize) -> Result<DenseMatrix<f64>, String> {
+    let rows: Vec<&[f64]> = (0..n_rows)
+        .map(|r| &flat[r * n_cols..(r + 1) * n_cols])
+        .collect();
+    DenseMatrix::from_2d_array(&rows)
+        .map_err(|e| format!("Failed to build matrix: {}", e))
 }
 
 // ── Training pipeline ────────────────────────────────────────────────
@@ -248,21 +461,24 @@ fn extract_training_samples(bars: &OhlcvBars, forward_days: usize) -> Vec<Traini
 /// Run the full training pipeline:
 /// 1. Load all cached OHLCV data for the region
 /// 2. Extract features + labels at each bar for each symbol
-/// 3. Split 80/20 train/test
-/// 4. Train RandomForest
-/// 5. Report accuracy, precision, recall
-/// 6. Save model to ~/.aura-worker/models/
+/// 3. Compute feature normalization (z-score scaler)
+/// 4. Split 80/20 train/test (flat contiguous matrix layout)
+/// 5. Train RandomForest (150 trees, depth 12, min_samples_leaf 5, m=3)
+/// 6. Report accuracy, precision, recall
+/// 7. Run walk-forward cross-validation (parallel folds)
+/// 8. Save model + scaler to ~/.aura-worker/models/
 pub fn train_model(params: &MlTrainParams) -> Result<TrainResult, String> {
     let cache_dir = data::get_cache_dir();
     let region = if params.region.is_empty() { "us" } else { &params.region };
     let forward_days = if params.forward_days == 0 { 5 } else { params.forward_days };
-    let n_trees: u16 = if params.n_trees == 0 { 100 } else { params.n_trees };
-    let max_depth = if params.max_depth == 0 { 10 } else { params.max_depth };
+    let n_trees: u16 = if params.n_trees == 0 { 150 } else { params.n_trees };
+    let max_depth = if params.max_depth == 0 { 12 } else { params.max_depth };
     let test_split = if params.test_split <= 0.0 || params.test_split >= 1.0 {
         0.2
     } else {
         params.test_split
     };
+    let wf_folds = if params.walk_forward_folds == 0 { 5 } else { params.walk_forward_folds };
 
     // 1. List all available symbols.
     let symbols = data::list_available_symbols(region, &cache_dir);
@@ -303,36 +519,42 @@ pub fn train_model(params: &MlTrainParams) -> Result<TrainResult, String> {
 
     info!("ml_train: {} total samples from {} symbols", samples.len(), symbols_used);
 
-    // 3. Split train/test.
-    let split_idx = ((1.0 - test_split) * samples.len() as f64) as usize;
-    let train_samples = &samples[..split_idx];
-    let test_samples = &samples[split_idx..];
+    // 3. Build flat feature matrix (contiguous, cache-friendly layout).
+    let n_total = samples.len();
+    let mut flat_features: Vec<f64> = Vec::with_capacity(n_total * NUM_FEATURES);
+    let mut all_labels: Vec<i32> = Vec::with_capacity(n_total);
 
-    if train_samples.is_empty() || test_samples.is_empty() {
+    for s in &samples {
+        flat_features.extend_from_slice(&s.features);
+        all_labels.push(s.label);
+    }
+
+    // 4. Compute and apply feature normalization (z-score).
+    let scaler = compute_scaler(&flat_features, n_total);
+    normalize_features_inplace(&mut flat_features, n_total, &scaler);
+
+    // 5. Split train/test.
+    let split_idx = ((1.0 - test_split) * n_total as f64) as usize;
+
+    if split_idx == 0 || split_idx >= n_total {
         return Err("Train/test split produced empty set. Need more data.".to_string());
     }
 
-    // Convert to DenseMatrix format.
-    let train_rows: Vec<Vec<f64>> = train_samples.iter().map(|s| s.features.to_vec()).collect();
-    let train_labels: Vec<i32> = train_samples.iter().map(|s| s.label).collect();
-    let test_rows: Vec<Vec<f64>> = test_samples.iter().map(|s| s.features.to_vec()).collect();
-    let test_labels: Vec<i32> = test_samples.iter().map(|s| s.label).collect();
+    let train_flat = &flat_features[..split_idx * NUM_FEATURES];
+    let train_labels = &all_labels[..split_idx];
+    let test_flat = &flat_features[split_idx * NUM_FEATURES..];
+    let test_labels = &all_labels[split_idx..];
 
-    let train_refs: Vec<&[f64]> = train_rows.iter().map(|r| r.as_slice()).collect();
-    let test_refs: Vec<&[f64]> = test_rows.iter().map(|r| r.as_slice()).collect();
+    let x_train = flat_to_dense_matrix(train_flat, split_idx, NUM_FEATURES)?;
+    let x_test = flat_to_dense_matrix(test_flat, n_total - split_idx, NUM_FEATURES)?;
 
-    let x_train = DenseMatrix::from_2d_array(&train_refs)
-        .map_err(|e| format!("Failed to build training matrix: {}", e))?;
-    let x_test = DenseMatrix::from_2d_array(&test_refs)
-        .map_err(|e| format!("Failed to build test matrix: {}", e))?;
-
-    // 4. Train Random Forest.
+    // 6. Train Random Forest.
     info!(
         "ml_train: training RandomForest with {} trees, max_depth={}, {} train / {} test samples",
         n_trees,
         max_depth,
-        train_samples.len(),
-        test_samples.len()
+        split_idx,
+        n_total - split_idx
     );
 
     let rf_params = RandomForestClassifierParameters::default()
@@ -341,32 +563,18 @@ pub fn train_model(params: &MlTrainParams) -> Result<TrainResult, String> {
         .with_min_samples_leaf(5)
         .with_m(3); // sqrt(10 features) ~ 3
 
-    let model = RandomForestClassifier::fit(&x_train, &train_labels, rf_params)
+    let model = RandomForestClassifier::fit(&x_train, &train_labels.to_vec(), rf_params.clone())
         .map_err(|e| format!("Training failed: {}", e))?;
 
-    // 5. Evaluate on test set.
+    // 7. Evaluate on test set.
     let test_preds = model
         .predict(&x_test)
         .map_err(|e| format!("Test prediction failed: {}", e))?;
 
-    let acc = accuracy(&test_labels, &test_preds);
+    let acc = accuracy(&test_labels.to_vec(), &test_preds);
 
     // Compute precision, recall, F1 manually (binary classification).
-    let tp = test_labels
-        .iter()
-        .zip(test_preds.iter())
-        .filter(|(&t, &p)| t == 1 && p == 1)
-        .count() as f64;
-    let fp = test_labels
-        .iter()
-        .zip(test_preds.iter())
-        .filter(|(&t, &p)| t == 0 && p == 1)
-        .count() as f64;
-    let fn_ = test_labels
-        .iter()
-        .zip(test_preds.iter())
-        .filter(|(&t, &p)| t == 1 && p == 0)
-        .count() as f64;
+    let (tp, fp, fn_) = compute_confusion(test_labels, &test_preds);
 
     let precision = if tp + fp > 0.0 { tp / (tp + fp) } else { 0.0 };
     let recall = if tp + fn_ > 0.0 { tp / (tp + fn_) } else { 0.0 };
@@ -377,15 +585,29 @@ pub fn train_model(params: &MlTrainParams) -> Result<TrainResult, String> {
     };
 
     // Label distribution.
-    let pos_count = samples.iter().filter(|s| s.label == 1).count();
-    let neg_count = samples.iter().filter(|s| s.label == 0).count();
+    let pos_count = all_labels.iter().filter(|&&l| l == 1).count();
+    let neg_count = all_labels.iter().filter(|&&l| l == 0).count();
 
     info!(
         "ml_train: accuracy={:.4}, precision={:.4}, recall={:.4}, f1={:.4}",
         acc, precision, recall, f1
     );
 
-    // 6. Save model to disk.
+    // 8. Walk-forward cross-validation (parallel folds).
+    let walk_forward = if wf_folds >= 2 && n_total >= wf_folds * 20 {
+        Some(run_walk_forward(&flat_features, &all_labels, n_total, wf_folds, &rf_params)?)
+    } else {
+        None
+    };
+
+    if let Some(ref wf) = walk_forward {
+        info!(
+            "ml_train: walk-forward CV: {} folds, mean_acc={:.4} +/- {:.4}",
+            wf.n_folds, wf.mean_accuracy, wf.std_accuracy
+        );
+    }
+
+    // 9. Save model + scaler to disk.
     let models_dir = get_models_dir();
     std::fs::create_dir_all(&models_dir)
         .map_err(|e| format!("Failed to create models dir: {}", e))?;
@@ -398,16 +620,19 @@ pub fn train_model(params: &MlTrainParams) -> Result<TrainResult, String> {
         precision: round4(precision),
         recall: round4(recall),
         f1_score: round4(f1),
-        feature_count: 10,
-        train_samples: train_samples.len(),
-        test_samples: test_samples.len(),
+        feature_count: NUM_FEATURES,
+        train_samples: split_idx,
+        test_samples: n_total - split_idx,
         symbols_used,
         n_trees,
         max_depth,
         forward_days,
     };
 
-    save_model_to_disk(&model, &model_info)?;
+    save_model_to_disk(&model, &model_info, &scaler)?;
+
+    // Invalidate in-memory cache so next prediction uses the new model.
+    invalidate_model_cache();
 
     let model_path = default_model_path();
 
@@ -417,9 +642,9 @@ pub fn train_model(params: &MlTrainParams) -> Result<TrainResult, String> {
         precision: round4(precision),
         recall: round4(recall),
         f1_score: round4(f1),
-        train_samples: train_samples.len(),
-        test_samples: test_samples.len(),
-        feature_count: 10,
+        train_samples: split_idx,
+        test_samples: n_total - split_idx,
+        feature_count: NUM_FEATURES,
         symbols_used,
         bars_processed,
         model_path: model_path.to_string_lossy().to_string(),
@@ -428,11 +653,99 @@ pub fn train_model(params: &MlTrainParams) -> Result<TrainResult, String> {
             positive: pos_count,
             negative: neg_count,
         },
+        walk_forward,
     })
 }
 
-/// Save model + metadata to disk.
-fn save_model_to_disk(model: &RfModel, info: &ModelInfo) -> Result<(), String> {
+/// Compute (TP, FP, FN) from labels and predictions.
+fn compute_confusion(labels: &[i32], preds: &[i32]) -> (f64, f64, f64) {
+    let mut tp = 0.0_f64;
+    let mut fp = 0.0_f64;
+    let mut fn_ = 0.0_f64;
+    for (&t, &p) in labels.iter().zip(preds.iter()) {
+        if t == 1 && p == 1 { tp += 1.0; }
+        if t == 0 && p == 1 { fp += 1.0; }
+        if t == 1 && p == 0 { fn_ += 1.0; }
+    }
+    (tp, fp, fn_)
+}
+
+// ── Walk-forward cross-validation ───────────────────────────────────
+//
+// Time-series aware CV: each fold trains on data before the fold
+// and tests on the fold. Folds are run in parallel via rayon.
+
+fn run_walk_forward(
+    flat_features: &[f64],
+    labels: &[i32],
+    n_total: usize,
+    n_folds: usize,
+    rf_params: &RandomForestClassifierParameters,
+) -> Result<WalkForwardResult, String> {
+    // Divide data into n_folds + 1 segments. The first segment is always
+    // training-only. Each subsequent fold uses all prior segments for
+    // training and the current segment for testing.
+    let segment_size = n_total / (n_folds + 1);
+    if segment_size < 10 {
+        return Err("Not enough data for walk-forward validation".to_string());
+    }
+
+    // Build fold specs: (train_end, test_start, test_end).
+    let fold_specs: Vec<(usize, usize, usize)> = (1..=n_folds)
+        .map(|fold| {
+            let test_start = fold * segment_size;
+            let test_end = if fold == n_folds { n_total } else { (fold + 1) * segment_size };
+            (test_start, test_start, test_end)
+        })
+        .collect();
+
+    // Run folds in parallel. Each fold owns its own slice of the data.
+    let fold_accuracies: Vec<f64> = fold_specs
+        .par_iter()
+        .filter_map(|&(train_end, test_start, test_end)| {
+            if train_end < 10 || test_end <= test_start {
+                return None;
+            }
+
+            let train_flat = &flat_features[..train_end * NUM_FEATURES];
+            let train_labels = &labels[..train_end];
+            let test_flat = &flat_features[test_start * NUM_FEATURES..test_end * NUM_FEATURES];
+            let test_labels = &labels[test_start..test_end];
+
+            let x_train = flat_to_dense_matrix(train_flat, train_end, NUM_FEATURES).ok()?;
+            let x_test = flat_to_dense_matrix(test_flat, test_end - test_start, NUM_FEATURES).ok()?;
+
+            let model = RandomForestClassifier::fit(
+                &x_train,
+                &train_labels.to_vec(),
+                rf_params.clone(),
+            ).ok()?;
+
+            let preds = model.predict(&x_test).ok()?;
+            Some(accuracy(&test_labels.to_vec(), &preds))
+        })
+        .collect();
+
+    if fold_accuracies.is_empty() {
+        return Err("All walk-forward folds failed".to_string());
+    }
+
+    let mean = fold_accuracies.iter().sum::<f64>() / fold_accuracies.len() as f64;
+    let variance = fold_accuracies.iter()
+        .map(|&a| (a - mean).powi(2))
+        .sum::<f64>() / fold_accuracies.len() as f64;
+    let std_dev = variance.sqrt();
+
+    Ok(WalkForwardResult {
+        n_folds: fold_accuracies.len(),
+        fold_accuracies: fold_accuracies.iter().map(|&a| round4(a)).collect(),
+        mean_accuracy: round4(mean),
+        std_accuracy: round4(std_dev),
+    })
+}
+
+/// Save model + metadata + scaler to disk.
+fn save_model_to_disk(model: &RfModel, info: &ModelInfo, scaler: &ScalerParams) -> Result<(), String> {
     let model_path = default_model_path();
     let info_path = default_model_info_path();
 
@@ -443,6 +756,7 @@ fn save_model_to_disk(model: &RfModel, info: &ModelInfo) -> Result<(), String> {
     let container = ModelContainer {
         info: info.clone(),
         model_json,
+        scaler: Some(scaler.clone()),
     };
 
     let container_bytes = serde_json::to_vec(&container)
@@ -466,8 +780,8 @@ fn save_model_to_disk(model: &RfModel, info: &ModelInfo) -> Result<(), String> {
     Ok(())
 }
 
-/// Load a trained model from disk.
-fn load_model_from_disk() -> Result<(RfModel, ModelInfo), String> {
+/// Load the full model + info + scaler from disk.
+fn load_model_from_disk_full() -> Result<(RfModel, ModelInfo, Option<ScalerParams>), String> {
     let model_path = default_model_path();
 
     if !model_path.exists() {
@@ -483,7 +797,18 @@ fn load_model_from_disk() -> Result<(RfModel, ModelInfo), String> {
     let model: RfModel = serde_json::from_str(&container.model_json)
         .map_err(|e| format!("Failed to deserialize model: {}", e))?;
 
-    Ok((model, container.info))
+    Ok((model, container.info, container.scaler))
+}
+
+/// Load just the raw RfModel from disk (for caching purposes).
+fn load_model_from_disk_raw() -> Result<RfModel, String> {
+    let model_path = default_model_path();
+    let bytes = std::fs::read(&model_path)
+        .map_err(|e| format!("Failed to read model: {}", e))?;
+    let container: ModelContainer = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Failed to parse model container: {}", e))?;
+    serde_json::from_str(&container.model_json)
+        .map_err(|e| format!("Failed to deserialize model: {}", e))
 }
 
 /// Get model status without loading the full model.

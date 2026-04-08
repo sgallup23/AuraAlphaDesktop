@@ -173,6 +173,24 @@ async fn create_panel_window(
 // ── App entry point ───────────────────────────────────────────────────
 
 pub fn run() {
+    // Configure rayon global thread pool to use all available CPU cores.
+    // By default rayon uses available_parallelism() which may not always
+    // be set correctly. Explicitly setting it guarantees maximum parallelism
+    // for all par_iter() calls across backtest, scanner, ML, and indicators.
+    let num_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    if let Err(e) = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cores)
+        .thread_name(|idx| format!("aura-rayon-{}", idx))
+        .build_global()
+    {
+        // build_global() fails if called twice — safe to ignore.
+        log::debug!("Rayon global pool already initialized: {}", e);
+    } else {
+        log::info!("Rayon global thread pool: {} threads", num_cores);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
