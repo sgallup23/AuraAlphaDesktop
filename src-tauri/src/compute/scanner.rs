@@ -304,6 +304,9 @@ mod tests {
             entry_logic: vec![],
             ema_fast: 9,
             ema_slow: 21,
+            top_n: 0,
+            min_volume: 0.0,
+            min_price: 0.0,
         };
         let result = execute_scan(&params);
         assert_eq!(result.status, "completed");
