@@ -275,6 +275,8 @@ pub fn run() {
             compute::backtest::run_local_backtest,
             compute::backtest::run_backtest_sweep,
             compute::scanner::run_local_scan,
+            compute::scanner::run_streaming_scan,
+            compute::scanner::clear_scanner_cache,
             compute::ml::run_local_ml_inference,
             compute::features::run_local_feature_extraction,
             // Local ML model training (smartcore Random Forest)

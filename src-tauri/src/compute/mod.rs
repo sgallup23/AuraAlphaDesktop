@@ -60,4 +60,4 @@ pub use cache::{clear_data_cache, download_batch, ensure_local_data, get_cache_s
 pub use features::run_local_feature_extraction;
 pub use ml::run_local_ml_inference;
 pub use ml_train::{get_model_status, predict_with_local_model, train_local_model};
-pub use scanner::run_local_scan;
+pub use scanner::{run_local_scan, run_streaming_scan, clear_scanner_cache};
