@@ -550,7 +550,7 @@ pub async fn run_worker(
     // rate-limiting the API, not the compute).
     let mut idle_backoff_secs: u64 = 1;
     let max_backoff_secs: u64 = 30;
-    let mut __consecutive_empty: u32 = 0;
+    let mut _consecutive_empty: u32 = 0;
 
     loop {
         // Check for shutdown signal (non-blocking)

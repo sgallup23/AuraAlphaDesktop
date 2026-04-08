@@ -55,10 +55,8 @@ pub struct IndicatorSet {
     pub bb_lower: Option<Vec<f64>>,
 }
 
-// Allow IndicatorSet to be shared across rayon threads for parameter sweeps.
-// Safety: IndicatorSet is read-only once constructed; all fields are Send+Sync.
-unsafe impl Send for IndicatorSet {}
-unsafe impl Sync for IndicatorSet {}
+// IndicatorSet contains only Vec<f64> and Option<Vec<f64>>, which are
+// inherently Send+Sync. Safe to share across rayon threads via Arc.
 
 /// Check if entry conditions are met at bar index `i`.
 ///
@@ -208,17 +206,22 @@ pub fn check_entry(
             }
             "zscore_extreme" => {
                 let lb = params.spread_lookback;
-                let ez = params.entry_zscore;
                 if i >= lb {
                     let window = &ind.closes[i - lb..i];
                     let inv_lb = 1.0 / lb as f64;
                     let mean = window.iter().sum::<f64>() * inv_lb;
-                    let variance =
-                        window.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() * inv_lb;
+                    // Use (x-mean)^2 via multiplication (faster than .powi(2)).
+                    let mut variance = 0.0_f64;
+                    for &x in window {
+                        let d = x - mean;
+                        variance += d * d;
+                    }
+                    variance *= inv_lb;
                     let std = variance.sqrt();
                     if std > 0.0 {
                         let z = (ind.closes[i] - mean) / std;
-                        z.abs() >= ez
+                        // Compare z^2 >= ez^2 to avoid abs() call.
+                        z * z >= params.entry_zscore * params.entry_zscore
                     } else {
                         false
                     }
@@ -809,6 +812,10 @@ pub fn execute_backtest(params: &BacktestParams) -> BacktestJobResult {
         entry_logic
     );
 
+    // Prefetch symbols into LRU cache before parallel processing.
+    // This avoids lock contention on the global LRU cache during par_iter.
+    data::prefetch_symbols(&symbols, region, &cache_dir);
+
     // Process symbols in parallel with rayon.
     let results: Vec<(Vec<Trade>, bool)> = symbols
         .par_iter()
@@ -831,7 +838,9 @@ pub fn execute_backtest(params: &BacktestParams) -> BacktestJobResult {
         })
         .collect();
 
-    let mut all_trades: Vec<Trade> = Vec::new();
+    // Pre-allocate all_trades with estimated total capacity.
+    let total_trade_estimate: usize = results.iter().map(|(t, _)| t.len()).sum();
+    let mut all_trades: Vec<Trade> = Vec::with_capacity(total_trade_estimate);
     let mut symbols_tested = 0_usize;
     let mut symbols_skipped = 0_usize;
 
@@ -866,6 +875,175 @@ pub fn execute_backtest(params: &BacktestParams) -> BacktestJobResult {
 }
 
 // ============================================================================
+// Parameter sweep — parallel backtest across multiple parameter combos
+// ============================================================================
+
+/// Result of a single parameter combination in a sweep.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SweepResult {
+    pub params: SweepParamSet,
+    pub metrics: BacktestMetricsExt,
+}
+
+/// The varied parameters in a sweep (the rest come from the base BacktestParams).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SweepParamSet {
+    pub stop_loss_atr_mult: f64,
+    pub take_profit_atr_mult: f64,
+    pub trailing_stop_pct: f64,
+    pub rsi_entry_threshold: f64,
+    pub rsi_oversold: f64,
+    pub volume_multiplier: f64,
+}
+
+/// Execute a parameter sweep: run the same backtest across multiple threshold
+/// combos in parallel, sharing pre-computed indicators via `Arc`.
+///
+/// This is the highest-throughput backtest path. For each symbol:
+/// 1. Load bars once from the LRU cache.
+/// 2. Compute indicators once (the expensive part).
+/// 3. Run N parameter combos in parallel, each reusing the shared indicators.
+///
+/// The outer loop parallelizes across symbols; the inner loop parallelizes
+/// across parameter combos. Rayon's work-stealing handles the nesting.
+///
+/// Returns one `SweepResult` per parameter combo, sorted by Sharpe descending.
+pub fn execute_backtest_sweep(
+    base_params: &BacktestParams,
+    sweep_combos: &[SweepParamSet],
+) -> Vec<SweepResult> {
+    if sweep_combos.is_empty() {
+        return Vec::new();
+    }
+
+    let cache_dir = data::get_cache_dir();
+    let region = if base_params.region.is_empty() { "us" } else { &base_params.region };
+
+    // Resolve symbol universe (same logic as execute_backtest).
+    let mut symbols = base_params.symbol_universe.clone();
+    if let Some(ref sym) = base_params.symbol {
+        if symbols.is_empty() {
+            symbols.push(sym.clone());
+        }
+    }
+    if symbols.is_empty() {
+        let available = data::list_available_symbols(region, &cache_dir);
+        let sample_size = available.len().min(15);
+        if sample_size > 0 {
+            use rand::seq::SliceRandom;
+            let mut rng = rand::thread_rng();
+            let mut sampled = available;
+            sampled.shuffle(&mut rng);
+            sampled.truncate(sample_size);
+            symbols = sampled;
+        }
+    }
+
+    let direction = if base_params.direction.is_empty() { "long" } else { &base_params.direction };
+    let entry_logic = if base_params.entry_logic.is_empty() {
+        vec![
+            "ema_cross_up".to_string(),
+            "rsi_above_threshold".to_string(),
+            "volume_surge".to_string(),
+        ]
+    } else {
+        base_params.entry_logic.clone()
+    };
+
+    info!(
+        "backtest sweep: {} symbols x {} param combos = {} total runs",
+        symbols.len(),
+        sweep_combos.len(),
+        symbols.len() * sweep_combos.len()
+    );
+
+    // Prefetch all symbols into LRU cache upfront.
+    data::prefetch_symbols(&symbols, region, &cache_dir);
+
+    // Phase 1: Load bars and pre-compute indicators for each symbol (parallel).
+    // Indicators depend only on period params (ema_fast, ema_slow, rsi_period, etc.)
+    // which are fixed across the sweep. Thresholds change but don't affect indicators.
+    let symbol_data: Vec<(OhlcvBars, Arc<IndicatorSet>)> = symbols
+        .par_iter()
+        .filter_map(|sym| {
+            let bars = data::load_bars(sym, region, &cache_dir)?;
+            if bars.len() < 50 {
+                return None;
+            }
+            let ind = build_indicators(&bars, base_params, &entry_logic);
+            Some((bars, Arc::new(ind)))
+        })
+        .collect();
+
+    let symbols_tested = symbol_data.len();
+    let symbols_skipped = symbols.len() - symbols_tested;
+
+    // Phase 2: Run all param combos in parallel, each combo iterating over
+    // all symbols using the shared pre-computed indicators.
+    let mut results: Vec<SweepResult> = sweep_combos
+        .par_iter()
+        .map(|combo| {
+            // Build a modified params with this combo's thresholds.
+            let mut p = base_params.clone();
+            p.stop_loss_atr_mult = combo.stop_loss_atr_mult;
+            p.take_profit_atr_mult = combo.take_profit_atr_mult;
+            p.trailing_stop_pct = combo.trailing_stop_pct;
+            p.rsi_entry_threshold = combo.rsi_entry_threshold;
+            p.rsi_oversold = combo.rsi_oversold;
+            p.volume_multiplier = combo.volume_multiplier;
+
+            // Collect trades across all symbols for this combo.
+            let mut all_trades: Vec<Trade> = Vec::with_capacity(symbols_tested * 5);
+
+            for (bars, ind) in &symbol_data {
+                let trades = simulate_trades_with_indicators(
+                    bars,
+                    &p,
+                    direction,
+                    &p.date_start,
+                    &p.date_end,
+                    &entry_logic,
+                    ind,
+                );
+                all_trades.extend(trades);
+            }
+
+            let base_metrics = metrics::compute_metrics(&all_trades);
+
+            let date_window = if p.date_start.is_empty() && p.date_end.is_empty() {
+                ":".to_string()
+            } else {
+                format!("{}:{}", p.date_start, p.date_end)
+            };
+
+            SweepResult {
+                params: combo.clone(),
+                metrics: BacktestMetricsExt {
+                    base: base_metrics,
+                    symbols_tested,
+                    symbols_skipped,
+                    strategy_family: p.strategy_family.clone(),
+                    date_window,
+                },
+            }
+        })
+        .collect();
+
+    // Sort by Sharpe ratio descending (best combos first).
+    results.sort_by(|a, b| {
+        b.metrics.base.sharpe.partial_cmp(&a.metrics.base.sharpe).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    info!(
+        "backtest sweep: completed {} combos, best Sharpe={:.4}",
+        results.len(),
+        results.first().map(|r| r.metrics.base.sharpe).unwrap_or(0.0)
+    );
+
+    results
+}
+
+// ============================================================================
 // Tauri IPC command
 // ============================================================================
 
@@ -877,6 +1055,23 @@ pub async fn run_local_backtest(params: BacktestParams) -> Result<BacktestJobRes
     let result = tokio::task::spawn_blocking(move || execute_backtest(&params))
         .await
         .map_err(|e| format!("Backtest task panicked: {}", e))?;
+    Ok(result)
+}
+
+/// IPC command: run a parameter sweep backtest.
+///
+/// Invoked from the frontend via `invoke('run_backtest_sweep', { baseParams, sweepCombos })`.
+/// Returns results sorted by Sharpe ratio (best first).
+#[tauri::command]
+pub async fn run_backtest_sweep(
+    base_params: BacktestParams,
+    sweep_combos: Vec<SweepParamSet>,
+) -> Result<Vec<SweepResult>, String> {
+    let result = tokio::task::spawn_blocking(move || {
+        execute_backtest_sweep(&base_params, &sweep_combos)
+    })
+    .await
+    .map_err(|e| format!("Sweep task panicked: {}", e))?;
     Ok(result)
 }
 

@@ -55,6 +55,7 @@ pub use features::{extract_feature_matrix, execute_feature_extraction_matrix};
 
 // Re-export IPC commands for registration in lib.rs.
 pub use backtest::run_local_backtest;
+pub use backtest::run_backtest_sweep;
 pub use cache::{clear_data_cache, download_batch, ensure_local_data, get_cache_status};
 pub use features::run_local_feature_extraction;
 pub use ml::run_local_ml_inference;

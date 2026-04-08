@@ -273,6 +273,7 @@ pub fn run() {
             // Local computation (pure Rust, zero dependencies)
             compute::demo::run_demo_backtest,
             compute::backtest::run_local_backtest,
+            compute::backtest::run_backtest_sweep,
             compute::scanner::run_local_scan,
             compute::ml::run_local_ml_inference,
             compute::features::run_local_feature_extraction,
