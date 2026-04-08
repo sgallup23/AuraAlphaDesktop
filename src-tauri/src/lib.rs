@@ -283,6 +283,8 @@ pub fn run() {
             // Offline data cache management
             compute::cache::get_cache_status,
             compute::cache::ensure_local_data,
+            compute::cache::download_batch,
+            compute::cache::clear_data_cache,
             // GPU compute
             compute::gpu::gpu_compute_status,
             compute::gpu::gpu_benchmark,

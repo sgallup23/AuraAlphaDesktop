@@ -3,10 +3,23 @@
 //! Handles bundled sample data seeding, cache statistics, remote data
 //! downloading, and stale-data eviction for the local OHLCV cache at
 //! `~/.aura-worker/data/{region}/`.
+//!
+//! Optimizations:
+//! - **Concurrent downloads**: `download_symbols_batch()` fetches multiple symbols
+//!   in parallel using `tokio::spawn` + `join_all`, limited by a semaphore (20 max).
+//! - **Incremental updates**: `download_symbol_data()` checks the last cached date
+//!   and only requests bars after that date, appending rather than re-downloading.
+//! - **Snappy compression**: All Parquet writes use snappy for smaller disk footprint.
+//! - **LRU invalidation**: Downloads invalidate the in-memory LRU cache so the next
+//!   `load_bars()` call picks up fresh data.
 
-use super::data::get_cache_dir;
+use super::data::{self, get_cache_dir};
+use super::types::OhlcvBars;
 use serde::Serialize;
 use std::path::PathBuf;
+
+/// Maximum concurrent HTTP downloads for batch operations.
+const MAX_CONCURRENT_DOWNLOADS: usize = 20;
 
 /// Statistics about the local data cache for a given region.
 #[derive(Debug, Clone, Serialize)]
@@ -16,6 +29,8 @@ pub struct CacheStats {
     pub total_size_bytes: u64,
     pub oldest_file_date: Option<String>,
     pub newest_file_date: Option<String>,
+    /// Number of symbols currently in the in-memory LRU cache.
+    pub in_memory_cached: usize,
 }
 
 // ── Core functions ──────────────────────────────────────────────────
@@ -51,7 +66,7 @@ pub fn ensure_sample_data(app: &tauri::AppHandle) -> Result<usize, String> {
         if let Some(filename) = src.file_name() {
             let dest = dest_dir.join(filename);
             if dest.exists() {
-                // Already seeded — skip.
+                // Already seeded -- skip.
                 continue;
             }
             std::fs::copy(&src, &dest)
@@ -115,23 +130,45 @@ pub fn get_cache_stats(region: &str) -> CacheStats {
         total_size_bytes,
         oldest_file_date: oldest.map(system_time_to_iso),
         newest_file_date: newest.map(system_time_to_iso),
+        in_memory_cached: data::cache_len(),
     }
 }
+
+// ── Single-symbol download (with incremental update) ───────────────
 
 /// Download OHLCV data for a symbol from the auraalpha.cc API and save
 /// as a Parquet file in the local cache.
 ///
-/// Endpoint: `GET https://auraalpha.cc/api/data/ohlcv/{symbol}?region={region}`
+/// **Incremental update**: If a Parquet file already exists with data up to
+/// some date, the API is called with `&after={last_date}` so only new bars
+/// are downloaded. The new bars are appended and deduped, not re-downloaded.
+///
+/// **Snappy compression**: Output Parquet uses snappy for smaller footprint.
+///
+/// Endpoint: `GET https://auraalpha.cc/api/data/ohlcv/{symbol}?region={region}[&after={date}]`
 /// The response is expected to be JSON with arrays: dates, opens, highs,
 /// lows, closes, volumes.
 pub async fn download_symbol_data(symbol: &str, region: &str) -> Result<(), String> {
-    use polars::prelude::*;
+    let cache_dir = get_cache_dir();
 
-    let url = format!(
+    // Check for existing data for incremental update.
+    let last_date = data::get_last_cached_date(symbol, region, &cache_dir);
+
+    let mut url = format!(
         "https://auraalpha.cc/api/data/ohlcv/{}?region={}",
         symbol.to_uppercase(),
         region
     );
+
+    // Append after parameter for incremental download.
+    if let Some(ref date) = last_date {
+        url.push_str(&format!("&after={}", date));
+        log::info!(
+            "cache: incremental download for {} (after {})",
+            symbol.to_uppercase(),
+            date
+        );
+    }
 
     let client = reqwest::Client::new();
     let resp = client
@@ -168,31 +205,159 @@ pub async fn download_symbol_data(symbol: &str, region: &str) -> Result<(), Stri
     let volumes = json_f64_array(&body, "volumes")
         .ok_or_else(|| format!("Missing 'volumes' array for {}", symbol))?;
 
-    // Build a Polars DataFrame and write as Parquet.
-    let df = DataFrame::new(vec![
-        Column::new("date".into(), &dates),
-        Column::new("open".into(), &opens),
-        Column::new("high".into(), &highs),
-        Column::new("low".into(), &lows),
-        Column::new("close".into(), &closes),
-        Column::new("volume".into(), &volumes),
-    ])
-    .map_err(|e| format!("DataFrame error for {}: {}", symbol, e))?;
+    // If the API returned no new bars (already up to date), skip write.
+    if dates.is_empty() {
+        log::info!("cache: {} already up to date, no new bars", symbol.to_uppercase());
+        return Ok(());
+    }
 
-    let dest_dir = get_cache_dir().join(region);
-    std::fs::create_dir_all(&dest_dir)
-        .map_err(|e| format!("Failed to create cache dir: {}", e))?;
+    let new_bars = OhlcvBars {
+        dates,
+        opens,
+        highs,
+        lows,
+        closes,
+        volumes,
+    };
 
-    let path = dest_dir.join(format!("{}.parquet", symbol.to_uppercase()));
-    let file = std::fs::File::create(&path)
-        .map_err(|e| format!("Failed to create file {:?}: {}", path, e))?;
+    // Use incremental append if we had existing data, otherwise write fresh.
+    if last_date.is_some() {
+        let total = data::append_bars_to_parquet(symbol, region, &cache_dir, &new_bars)?;
+        log::info!(
+            "cache: incremental update for {} -> {} total bars",
+            symbol.to_uppercase(),
+            total
+        );
+    } else {
+        // Fresh download -- write directly with snappy compression.
+        let dest_dir = cache_dir.join(region);
+        std::fs::create_dir_all(&dest_dir)
+            .map_err(|e| format!("Failed to create cache dir: {}", e))?;
 
-    ParquetWriter::new(file)
-        .finish(&mut df.clone())
-        .map_err(|e| format!("Parquet write error for {}: {}", symbol, e))?;
+        let path = dest_dir.join(format!("{}.parquet", symbol.to_uppercase()));
+        let mut df = data::bars_to_dataframe(&new_bars)?;
+        data::write_parquet_snappy(&path, &mut df)?;
 
-    log::info!("Downloaded and cached {} -> {:?}", symbol, path);
+        // Invalidate LRU cache.
+        data::invalidate_cache_entry(symbol, region);
+
+        log::info!(
+            "cache: downloaded and cached {} -> {:?} ({} bars)",
+            symbol.to_uppercase(),
+            path,
+            new_bars.len()
+        );
+    }
+
     Ok(())
+}
+
+// ── Batch download (concurrent with semaphore) ─────────────────────
+
+/// Result of a batch download operation.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchDownloadResult {
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub errors: Vec<String>,
+}
+
+/// Download OHLCV data for multiple symbols concurrently.
+///
+/// Uses `tokio::spawn` + `futures::future::join_all` with a semaphore to
+/// limit concurrency to `MAX_CONCURRENT_DOWNLOADS` (20) parallel HTTP fetches.
+/// This is dramatically faster than sequential downloads for large symbol lists.
+///
+/// Each download uses incremental updates when possible (see `download_symbol_data`).
+pub async fn download_symbols_batch(
+    symbols: &[String],
+    region: &str,
+) -> BatchDownloadResult {
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    let total = symbols.len();
+    if total == 0 {
+        return BatchDownloadResult {
+            total: 0,
+            succeeded: 0,
+            failed: 0,
+            errors: vec![],
+        };
+    }
+
+    log::info!(
+        "cache: batch downloading {} symbols (max {} concurrent)",
+        total,
+        MAX_CONCURRENT_DOWNLOADS
+    );
+
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS));
+
+    let mut handles = Vec::with_capacity(total);
+
+    for symbol in symbols {
+        let sym = symbol.clone();
+        let rgn = region.to_string();
+        let sem = Arc::clone(&semaphore);
+
+        let handle = tokio::spawn(async move {
+            // Acquire semaphore permit (blocks if at max concurrency).
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|_| format!("Semaphore closed for {}", sym))?;
+
+            download_symbol_data(&sym, &rgn).await
+        });
+
+        handles.push((symbol.clone(), handle));
+    }
+
+    // Await all downloads.
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+    let mut errors = Vec::new();
+
+    for (symbol, handle) in handles {
+        match handle.await {
+            Ok(Ok(())) => succeeded += 1,
+            Ok(Err(e)) => {
+                failed += 1;
+                errors.push(format!("{}: {}", symbol, e));
+            }
+            Err(e) => {
+                failed += 1;
+                errors.push(format!("{}: task panicked: {}", symbol, e));
+            }
+        }
+    }
+
+    // Log errors but don't truncate the list.
+    if failed > 0 {
+        log::warn!(
+            "cache: batch download completed: {}/{} succeeded, {} failed",
+            succeeded,
+            total,
+            failed
+        );
+        for err in &errors {
+            log::warn!("cache: download error: {}", err);
+        }
+    } else {
+        log::info!(
+            "cache: batch download completed: all {} symbols succeeded",
+            total
+        );
+    }
+
+    BatchDownloadResult {
+        total,
+        succeeded,
+        failed,
+        errors,
+    }
 }
 
 /// Remove data files (parquet and csv) older than `max_age_days` from all
@@ -238,6 +403,8 @@ pub fn evict_stale_data(max_age_days: u32) -> usize {
     }
 
     if removed > 0 {
+        // Also clear the in-memory cache since files were removed.
+        data::clear_bars_cache();
         log::info!("Evicted {} stale data files (>{} days old)", removed, max_age_days);
     }
 
@@ -255,17 +422,40 @@ pub fn get_cache_status(region: Option<String>) -> CacheStats {
 
 /// IPC command: ensure bundled sample data is copied to the local cache.
 ///
-/// Safe to call multiple times — skips files that already exist.
+/// Safe to call multiple times -- skips files that already exist.
 #[tauri::command]
 pub fn ensure_local_data(app: tauri::AppHandle) -> Result<usize, String> {
     ensure_sample_data(&app)
+}
+
+/// IPC command: download OHLCV data for a batch of symbols concurrently.
+///
+/// Uses up to 20 parallel HTTP connections for maximum throughput.
+/// Each symbol uses incremental updates when existing data is available.
+#[tauri::command]
+pub async fn download_batch(
+    symbols: Vec<String>,
+    region: Option<String>,
+) -> Result<BatchDownloadResult, String> {
+    let region = region.unwrap_or_else(|| "us".to_string());
+    Ok(download_symbols_batch(&symbols, &region).await)
+}
+
+/// IPC command: clear the in-memory OHLCV data cache.
+///
+/// Useful when the user manually manages data files or wants to free memory.
+#[tauri::command]
+pub fn clear_data_cache() -> String {
+    let before = data::cache_len();
+    data::clear_bars_cache();
+    format!("Cleared {} cached entries", before)
 }
 
 // ── Internal helpers ────────────────────────────────────────────────
 
 /// Resolve the path to the bundled sample data directory.
 ///
-/// Mirrors the logic from `demo.rs` — checks Tauri resource dir,
+/// Mirrors the logic from `demo.rs` -- checks Tauri resource dir,
 /// adjacent to executable, and development source tree.
 fn find_sample_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     use tauri::Manager;
@@ -292,7 +482,7 @@ fn find_sample_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         }
     }
 
-    // 3. Development fallback — source tree.
+    // 3. Development fallback -- source tree.
     let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
         .join("sample_data");
@@ -382,5 +572,16 @@ mod tests {
         let val = serde_json::json!({ "other": 42 });
         assert!(json_str_array(&val, "dates").is_none());
         assert!(json_f64_array(&val, "prices").is_none());
+    }
+
+    #[test]
+    fn test_batch_download_result_default() {
+        let result = BatchDownloadResult {
+            total: 0,
+            succeeded: 0,
+            failed: 0,
+            errors: vec![],
+        };
+        assert_eq!(result.total, 0);
     }
 }

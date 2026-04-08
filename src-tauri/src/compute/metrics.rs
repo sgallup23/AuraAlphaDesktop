@@ -106,22 +106,20 @@ pub fn compute_metrics(trades: &[Trade]) -> BacktestMetrics {
     }
 
     // Drawdown per bar — element-wise, safe to parallelize for large sets.
-    let (dd, max_dd) = if use_par && cum.len() >= PAR_TRADE_THRESHOLD {
+    let max_dd = if use_par && cum.len() >= PAR_TRADE_THRESHOLD {
         let dd: Vec<f64> = cum
             .par_iter()
             .zip(peak.par_iter())
             .map(|(&c, &p)| (c - p) / p)
             .collect();
-        let max_dd = dd.par_iter().cloned().reduce(|| 0.0_f64, f64::min);
-        (dd, max_dd)
+        dd.par_iter().cloned().reduce(|| 0.0_f64, f64::min)
     } else {
         let dd: Vec<f64> = cum
             .iter()
             .zip(peak.iter())
             .map(|(&c, &p)| (c - p) / p)
             .collect();
-        let max_dd = dd.iter().cloned().fold(0.0_f64, f64::min);
-        (dd, max_dd)
+        dd.iter().cloned().fold(0.0_f64, f64::min)
     };
 
     let total_ret = if !cum.is_empty() {

@@ -28,23 +28,30 @@ const PAR_WINDOW_THRESHOLD: usize = 500;
 ///
 /// Port of `_compute_atr` (compute_worker.py:89-103).
 /// Returns a Vec of length `highs.len()` with leading NaN values.
+///
+/// Optimization: True Range computed on contiguous slices for SIMD auto-vectorization.
+/// Branch-free NaN propagation via f64 arithmetic.
 pub fn compute_atr(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -> Vec<f64> {
     let n = highs.len();
     if n < period + 1 {
         return vec![f64::NAN; n];
     }
 
-    // True Range: starts at index 1 (needs previous close).
-    // Each TR[i] is independent — safe to compute in parallel.
-    let tr: Vec<f64> = (1..n)
-        .into_par_iter()
-        .map(|i| {
-            let hl = highs[i] - lows[i];
-            let hc = (highs[i] - closes[i - 1]).abs();
-            let lc = (lows[i] - closes[i - 1]).abs();
-            hl.max(hc.max(lc))
-        })
-        .collect();
+    // True Range: vectorized on contiguous slices for SIMD auto-vectorization.
+    // The compiler can vectorize these f64 operations across the slice.
+    let tr_len = n - 1;
+    let mut tr = vec![0.0_f64; tr_len];
+    let h = &highs[1..];
+    let l = &lows[1..];
+    let prev_c = &closes[..tr_len];
+
+    // Compute TR components into contiguous slices -- SIMD-friendly.
+    for i in 0..tr_len {
+        let hl = h[i] - l[i];
+        let hc = (h[i] - prev_c[i]).abs();
+        let lc = (l[i] - prev_c[i]).abs();
+        tr[i] = hl.max(hc.max(lc));
+    }
 
     let mut atr = vec![f64::NAN; n];
 
@@ -53,9 +60,11 @@ pub fn compute_atr(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -
         let initial: f64 = tr[..period].iter().sum::<f64>() / period as f64;
         atr[period] = initial;
 
-        // Wilder smoothing from there.
+        // Wilder smoothing (sequential dependency).
+        let inv_period = 1.0 / period as f64;
+        let decay = (period as f64 - 1.0) * inv_period;
         for i in (period + 1)..=tr.len() {
-            atr[i] = (atr[i - 1] * (period as f64 - 1.0) + tr[i - 1]) / period as f64;
+            atr[i] = atr[i - 1] * decay + tr[i - 1] * inv_period;
         }
     }
 
@@ -67,6 +76,8 @@ pub fn compute_atr(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -
 /// Port of `_compute_ema` (compute_worker.py:106-116).
 /// Seeds with SMA of the first `period` values, then applies
 /// the standard EMA formula with alpha = 2 / (period + 1).
+///
+/// Pre-computes alpha/one_minus_alpha to avoid repeated division.
 pub fn compute_ema(data: &[f64], period: usize) -> Vec<f64> {
     let n = data.len();
     let mut ema = vec![f64::NAN; n];
@@ -76,13 +87,14 @@ pub fn compute_ema(data: &[f64], period: usize) -> Vec<f64> {
     }
 
     let alpha = 2.0 / (period as f64 + 1.0);
+    let one_minus_alpha = 1.0 - alpha;
 
     // Seed: SMA of data[0..period]
     let seed: f64 = data[..period].iter().sum::<f64>() / period as f64;
     ema[period - 1] = seed;
 
     for i in period..n {
-        ema[i] = data[i] * alpha + ema[i - 1] * (1.0 - alpha);
+        ema[i] = data[i] * alpha + ema[i - 1] * one_minus_alpha;
     }
 
     ema
@@ -93,6 +105,11 @@ pub fn compute_ema(data: &[f64], period: usize) -> Vec<f64> {
 /// Port of `_compute_rsi` (compute_worker.py:119-135).
 /// Returns RSI values in [0, 100]. Fills initial values with 50.0
 /// (matching the Python default).
+///
+/// Optimizations:
+/// - Branch-free gain/loss via f64::max(0.0) -- SIMD-friendly on contiguous slices
+/// - Pre-computed Wilder smoothing constants
+/// - Single delta pass, gains/losses computed in one vectorizable loop
 pub fn compute_rsi(closes: &[f64], period: usize) -> Vec<f64> {
     let n = closes.len();
     let mut rsi = vec![50.0; n];
@@ -101,19 +118,29 @@ pub fn compute_rsi(closes: &[f64], period: usize) -> Vec<f64> {
         return rsi;
     }
 
-    // Price deltas (diff).
-    let deltas: Vec<f64> = (1..n).map(|i| closes[i] - closes[i - 1]).collect();
-    let gains: Vec<f64> = deltas.iter().map(|&d| if d > 0.0 { d } else { 0.0 }).collect();
-    let losses: Vec<f64> = deltas.iter().map(|&d| if d < 0.0 { -d } else { 0.0 }).collect();
+    let delta_len = n - 1;
+    // Branch-free gain/loss: max(delta, 0) and max(-delta, 0).
+    // These are pure arithmetic -- the compiler auto-vectorizes with SIMD.
+    let mut gains = vec![0.0_f64; delta_len];
+    let mut losses = vec![0.0_f64; delta_len];
+    for i in 0..delta_len {
+        let d = closes[i + 1] - closes[i];
+        gains[i] = d.max(0.0);   // branch-free: maps to maxsd/vmax on x86
+        losses[i] = (-d).max(0.0);
+    }
 
     // Initial averages: simple mean of first `period` values.
     let mut avg_gain: f64 = gains[..period].iter().sum::<f64>() / period as f64;
     let mut avg_loss: f64 = losses[..period].iter().sum::<f64>() / period as f64;
 
+    // Pre-compute Wilder smoothing constants.
+    let inv_period = 1.0 / period as f64;
+    let decay = (period as f64 - 1.0) * inv_period;
+
     // Wilder smoothing from index `period` onward.
-    for i in period..deltas.len() {
-        avg_gain = (avg_gain * (period as f64 - 1.0) + gains[i]) / period as f64;
-        avg_loss = (avg_loss * (period as f64 - 1.0) + losses[i]) / period as f64;
+    for i in period..delta_len {
+        avg_gain = avg_gain * decay + gains[i] * inv_period;
+        avg_loss = avg_loss * decay + losses[i] * inv_period;
         let rs = avg_gain / (avg_loss + 1e-10);
         rsi[i + 1] = 100.0 - (100.0 / (1.0 + rs));
     }
@@ -126,13 +153,22 @@ pub fn compute_rsi(closes: &[f64], period: usize) -> Vec<f64> {
 /// Port of `_compute_bbands` (compute_worker.py:138-151).
 /// Returns a tuple of three Vecs, each of length `closes.len()`.
 /// Uses population std (ddof=0), matching `np.std()` default.
+///
+/// Optimization: Loop-fused rolling SMA + variance in a single pass using
+/// Welford's running sum. This avoids the separate SMA computation and
+/// halves memory traffic by computing mean and std_dev in one window scan.
+/// For large datasets, rayon parallelizes across windows.
 pub fn compute_bbands(
     closes: &[f64],
     period: usize,
     std_mult: f64,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let n = closes.len();
+    if n < period {
+        return (vec![f64::NAN; n], vec![f64::NAN; n], vec![f64::NAN; n]);
+    }
     let valid_count = n - (period - 1);
+    let inv_period = 1.0 / period as f64;
 
     // Parallelize window computations when there are enough windows.
     if valid_count >= PAR_WINDOW_THRESHOLD {
@@ -141,11 +177,18 @@ pub fn compute_bbands(
             .into_par_iter()
             .map(|i| {
                 let window = &closes[(i + 1 - period)..=i];
-                let mean: f64 = window.iter().sum::<f64>() / period as f64;
-                let variance: f64 =
-                    window.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / period as f64;
-                let std_dev = variance.sqrt();
-                (i, mean + std_mult * std_dev, mean, mean - std_mult * std_dev)
+                // Fused mean + variance in one pass over the window.
+                let mut sum = 0.0_f64;
+                let mut sum_sq = 0.0_f64;
+                for &x in window {
+                    sum += x;
+                    sum_sq += x * x;
+                }
+                let mean = sum * inv_period;
+                // Var = E[X^2] - E[X]^2  (population variance, ddof=0)
+                let variance = (sum_sq * inv_period - mean * mean).max(0.0);
+                let band = std_mult * variance.sqrt();
+                (i, mean + band, mean, mean - band)
             })
             .collect();
 
@@ -163,16 +206,33 @@ pub fn compute_bbands(
         let mut middle = vec![f64::NAN; n];
         let mut lower = vec![f64::NAN; n];
 
-        for i in (period - 1)..n {
-            let window = &closes[(i + 1 - period)..=i];
-            let mean: f64 = window.iter().sum::<f64>() / period as f64;
-            let variance: f64 =
-                window.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / period as f64;
-            let std_dev = variance.sqrt();
+        // Rolling window: maintain running sum and sum_sq for O(1) per step.
+        // Initial window sum.
+        let mut sum: f64 = closes[..period].iter().sum();
+        let mut sum_sq: f64 = closes[..period].iter().map(|&x| x * x).sum();
 
+        let first = period - 1;
+        let mean = sum * inv_period;
+        let variance = (sum_sq * inv_period - mean * mean).max(0.0);
+        let band = std_mult * variance.sqrt();
+        middle[first] = mean;
+        upper[first] = mean + band;
+        lower[first] = mean - band;
+
+        // Slide the window: add new element, remove oldest.
+        for i in period..n {
+            let new_val = closes[i];
+            let old_val = closes[i - period];
+            sum += new_val - old_val;
+            sum_sq += new_val * new_val - old_val * old_val;
+
+            let mean = sum * inv_period;
+            // Clamp to zero to handle floating-point rounding.
+            let variance = (sum_sq * inv_period - mean * mean).max(0.0);
+            let band = std_mult * variance.sqrt();
             middle[i] = mean;
-            upper[i] = mean + std_mult * std_dev;
-            lower[i] = mean - std_mult * std_dev;
+            upper[i] = mean + band;
+            lower[i] = mean - band;
         }
         (upper, middle, lower)
     }
@@ -181,9 +241,15 @@ pub fn compute_bbands(
 /// Compute Simple Moving Average (SMA).
 ///
 /// Port of `_compute_sma` (compute_worker.py:154-160).
+///
+/// Optimization: Sequential path uses O(1) rolling sum instead of O(period) per window.
 pub fn compute_sma(data: &[f64], period: usize) -> Vec<f64> {
     let n = data.len();
-    let valid_count = if n >= period { n - (period - 1) } else { 0 };
+    if n < period {
+        return vec![f64::NAN; n];
+    }
+    let valid_count = n - (period - 1);
+    let inv_period = 1.0 / period as f64;
 
     // Parallelize window computations when there are enough windows.
     if valid_count >= PAR_WINDOW_THRESHOLD {
@@ -191,7 +257,7 @@ pub fn compute_sma(data: &[f64], period: usize) -> Vec<f64> {
             .into_par_iter()
             .map(|i| {
                 let window = &data[(i + 1 - period)..=i];
-                (i, window.iter().sum::<f64>() / period as f64)
+                (i, window.iter().sum::<f64>() * inv_period)
             })
             .collect();
 
@@ -202,9 +268,14 @@ pub fn compute_sma(data: &[f64], period: usize) -> Vec<f64> {
         sma
     } else {
         let mut sma = vec![f64::NAN; n];
-        for i in (period - 1)..n {
-            let window = &data[(i + 1 - period)..=i];
-            sma[i] = window.iter().sum::<f64>() / period as f64;
+
+        // Rolling sum: O(1) per step instead of O(period).
+        let mut sum: f64 = data[..period].iter().sum();
+        sma[period - 1] = sum * inv_period;
+
+        for i in period..n {
+            sum += data[i] - data[i - period];
+            sma[i] = sum * inv_period;
         }
         sma
     }
@@ -214,18 +285,22 @@ pub fn compute_sma(data: &[f64], period: usize) -> Vec<f64> {
 ///
 /// Port of `_compute_obv` (compute_worker.py:163-174).
 /// Returns a Vec of cumulative volume direction values.
+///
+/// Optimization: Branch-free sign computation using f64 signum.
+/// sign = (close > prev).signum() - (close < prev).signum() maps to {-1, 0, 1}
+/// without branches -- though the cumulative sum remains sequential.
 pub fn compute_obv(closes: &[f64], volumes: &[f64]) -> Vec<f64> {
     let n = closes.len();
     let mut obv = vec![0.0; n];
 
     for i in 1..n {
-        if closes[i] > closes[i - 1] {
-            obv[i] = obv[i - 1] + volumes[i];
-        } else if closes[i] < closes[i - 1] {
-            obv[i] = obv[i - 1] - volumes[i];
-        } else {
-            obv[i] = obv[i - 1];
-        }
+        // Branch-free: compute direction sign as -1, 0, or +1.
+        let diff = closes[i] - closes[i - 1];
+        // signum returns -1.0, 0.0, or 1.0 for negative, zero, positive.
+        // NaN propagates naturally (signum of NaN is NaN).
+        let sign = diff.signum();
+        // If diff is exactly 0.0, signum returns 0.0 -> volume contribution is 0.
+        obv[i] = obv[i - 1] + sign * volumes[i];
     }
 
     obv

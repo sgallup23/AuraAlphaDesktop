@@ -1,0 +1,15 @@
+# Cargo build configuration for Aura Alpha Desktop
+#
+# target-cpu=native enables AVX2/SSE4.2 SIMD instructions on modern x86-64 CPUs.
+# This gives a massive speedup for numeric computation (indicator loops, backtest
+# simulation, ML inference) because the compiler can auto-vectorize f64 operations
+# into 256-bit SIMD instead of scalar math.
+#
+# NOTE: Binaries built with target-cpu=native will NOT run on older CPUs that lack
+# these instruction sets. For distribution builds (CI/release), remove this flag
+# or use target-cpu=x86-64-v3 (AVX2 baseline, covers 95%+ of desktop CPUs since 2013).
+# For cross-compilation or CI, override with:
+#   RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release
+
+[build]
+rustflags = ["-C", "target-cpu=native"]

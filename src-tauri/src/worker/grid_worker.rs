@@ -550,7 +550,7 @@ pub async fn run_worker(
     // rate-limiting the API, not the compute).
     let mut idle_backoff_secs: u64 = 1;
     let max_backoff_secs: u64 = 30;
-    let mut consecutive_empty: u32 = 0;
+    let mut __consecutive_empty: u32 = 0;
 
     loop {
         // Check for shutdown signal (non-blocking)
@@ -598,13 +598,24 @@ pub async fn run_worker(
         match dequeue_jobs(&client, &coordinator_url, &token, &worker_id, batch_size).await {
             Ok(jobs) if !jobs.is_empty() => {
                 idle_backoff_secs = 1;
-                consecutive_empty = 0;
+                _consecutive_empty = 0;
                 let job_count = jobs.len();
 
                 info!(
                     "grid_worker: dequeued {job_count} jobs (in_flight={current_in_flight}, \
                      max_parallel={max_parallel})"
                 );
+
+                // Prefetch OHLCV data for all symbols in this batch into the
+                // in-memory LRU cache. This loads Parquet files in parallel via
+                // rayon so the actual compute phase sees only cache hits.
+                {
+                    let jobs_for_prefetch = jobs.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        job_executor::prefetch_batch_data(&jobs_for_prefetch)
+                    })
+                    .await;
+                }
 
                 // Spawn each job as a separate tokio task
                 for job in jobs {
@@ -683,7 +694,7 @@ pub async fn run_worker(
             }
             Ok(_) => {
                 // No jobs available — exponential backoff
-                consecutive_empty += 1;
+                _consecutive_empty += 1;
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(idle_backoff_secs)) => {}
                     _ = shutdown.notified() => {

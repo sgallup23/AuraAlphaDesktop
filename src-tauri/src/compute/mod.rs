@@ -42,13 +42,17 @@ pub mod types;
 // Re-export primary types for convenience.
 pub use types::{
     BacktestJobResult, BacktestMetrics, BacktestMetricsExt, BacktestParams, BacktestResult,
-    FeatureExtractionParams, FeatureJobResult, FeatureRow, FeatureValues, MlFeatureScores,
-    MlJobResult, MlParams, MlPrediction, OhlcvBars, ScanJobResult, ScanParams, ScanSignal, Trade,
+    FeatureExtractionParams, FeatureJobResult, FeatureMatrix, FeatureRow, FeatureValues,
+    MlFeatureScores, MlJobResult, MlParams, MlPrediction, OhlcvBars, ScanJobResult, ScanParams,
+    ScanSignal, Trade,
 };
+
+// Re-export ML helpers for use by scanner/backtest modules.
+pub use ml_train::{extract_latest_features, predict_single};
 
 // Re-export IPC commands for registration in lib.rs.
 pub use backtest::run_local_backtest;
-pub use cache::{ensure_local_data, get_cache_status};
+pub use cache::{clear_data_cache, download_batch, ensure_local_data, get_cache_status};
 pub use features::run_local_feature_extraction;
 pub use ml::run_local_ml_inference;
 pub use ml_train::{get_model_status, predict_with_local_model, train_local_model};

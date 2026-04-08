@@ -1,10 +1,14 @@
-//! ML inference — hand-coded ensemble, no ML crate needed.
+//! ML inference — hand-coded ensemble + optional RF model boost.
 //!
 //! Port of execute_ml_inference (compute_worker.py:706-788).
 //! Uses a simple momentum + mean-reversion + trend ensemble.
+//!
+//! When a trained RF model is available, the ensemble prediction is
+//! blended with the RF model's prediction for higher accuracy.
 
 use super::data;
 use super::indicators;
+use super::ml_train;
 use super::types::*;
 use log::info;
 use rayon::prelude::*;
@@ -16,6 +20,7 @@ use rayon::prelude::*;
 /// - Momentum score (+/-0.3): EMA fast vs slow crossover direction
 /// - RSI score (+/-0.4): Oversold/overbought mean-reversion signal
 /// - Trend score (+/-0.3): 5-day returns clamped
+/// - RF model boost (+/-0.2): when trained model available, blend its prediction
 ///
 /// prediction = sum of scores
 /// confidence = min(0.95, abs(prediction) + 0.3)
@@ -89,7 +94,13 @@ pub fn execute_ml_inference(params: &MlParams) -> MlJobResult {
             let returns_5d = (bars.closes[last] - bars.closes[prev_idx]) / bars.closes[prev_idx];
             let trend_score = (returns_5d * 5.0).clamp(-0.3, 0.3);
 
-            let prediction = round4(momentum_score + rsi_score + trend_score);
+            // 4. RF model boost (+/-0.2): blend trained model prediction when available.
+            let rf_boost = ml_train::extract_latest_features(&bars)
+                .and_then(|features| ml_train::predict_single(&features))
+                .map(|(pred, _conf)| if pred == 1 { 0.2 } else { -0.2 })
+                .unwrap_or(0.0);
+
+            let prediction = round4(momentum_score + rsi_score + trend_score + rf_boost);
             let confidence = round4((prediction.abs() + 0.3).min(0.95));
 
             let direction = if prediction > 0.0 {

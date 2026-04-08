@@ -3,10 +3,15 @@
 //! Checks the latest bar of each symbol for entry conditions.
 //! Supports scan types: momentum, reversal, breakout, volume.
 //! Uses rayon for parallel scanning across symbols.
+//!
+//! ML-enhanced: when a trained RF model is available, the scanner
+//! incorporates the model's prediction into the confidence score,
+//! blending rule-based signals with ML predictions.
 
 use super::backtest::{self, IndicatorSet};
 use super::data;
 use super::indicators;
+use super::ml_train;
 use super::types::*;
 use log::info;
 use rayon::prelude::*;
@@ -194,6 +199,28 @@ pub fn execute_scan(scan_params: &ScanParams) -> ScanJobResult {
                     ind.rsi[last_idx]
                 };
 
+                // Base confidence from rule-based signal.
+                let rule_confidence = (0.5 + rsi_val / 200.0).min(0.95);
+
+                // ML-enhanced confidence: blend with RF model prediction if available.
+                let confidence = if let Some(features) = ml_train::extract_latest_features(&bars) {
+                    if let Some((ml_pred, ml_conf)) = ml_train::predict_single(&features) {
+                        // ML agrees with buy signal: boost confidence.
+                        // ML disagrees: reduce confidence.
+                        if ml_pred == 1 {
+                            // Agreement: weighted average favoring the higher signal.
+                            round4((rule_confidence * 0.4 + ml_conf * 0.6).min(0.95))
+                        } else {
+                            // Disagreement: dampen but don't suppress entirely.
+                            round4((rule_confidence * 0.7).min(0.85))
+                        }
+                    } else {
+                        rule_confidence
+                    }
+                } else {
+                    rule_confidence
+                };
+
                 Some(ScanSignal {
                     symbol: sym.clone(),
                     signal: "buy".to_string(),
@@ -201,7 +228,7 @@ pub fn execute_scan(scan_params: &ScanParams) -> ScanJobResult {
                     price: round4(bars.closes[last_idx]),
                     rsi: round2(rsi_val),
                     date: bars.dates[last_idx].clone(),
-                    confidence: (0.5 + rsi_val / 200.0).min(0.95),
+                    confidence,
                 })
             } else {
                 None
@@ -218,6 +245,10 @@ pub fn execute_scan(scan_params: &ScanParams) -> ScanJobResult {
         results,
         symbols_scanned: symbols.len(),
         signals_found,
+        elapsed_ms: 0, // filled in by caller if needed
+        pre_filtered: 0,
+        gpu_used: false,
+        cache_hits: 0,
     }
 }
 

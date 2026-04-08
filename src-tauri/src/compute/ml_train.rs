@@ -42,10 +42,13 @@ const NUM_FEATURES: usize = 10;
 // OnceLock + Mutex so it survives across IPC calls. The cache is
 // invalidated when a new model is trained.
 
-struct CachedModel {
-    model: RfModel,
+/// Cached model container: stores the raw JSON bytes of the model in memory
+/// so we skip disk IO on repeated calls. We deserialize from these bytes
+/// which is 10-50x faster than reading from disk (no syscalls, no FS latency).
+struct CachedModelBytes {
+    /// Raw JSON bytes of the model (deserialized on demand).
+    model_json: String,
     info: ModelInfo,
-    /// Scaler parameters: (mean, std) per feature, length = NUM_FEATURES.
     scaler: Option<ScalerParams>,
 }
 
@@ -56,9 +59,9 @@ pub struct ScalerParams {
     pub stds: Vec<f64>,
 }
 
-static MODEL_CACHE: OnceLock<Mutex<Option<CachedModel>>> = OnceLock::new();
+static MODEL_CACHE: OnceLock<Mutex<Option<CachedModelBytes>>> = OnceLock::new();
 
-fn get_model_cache() -> &'static Mutex<Option<CachedModel>> {
+fn get_model_cache() -> &'static Mutex<Option<CachedModelBytes>> {
     MODEL_CACHE.get_or_init(|| Mutex::new(None))
 }
 
@@ -69,42 +72,46 @@ fn invalidate_model_cache() {
     }
 }
 
-/// Load model from cache or disk. The model bytes are kept in memory so
-/// subsequent calls skip disk IO entirely. We store the raw serialized
-/// bytes and deserialize on each call because smartcore's model types
-/// are not cheaply cloneable — but deserializing from an in-memory
-/// buffer is still 10-50x faster than reading from disk.
+/// Load model from cache or disk. On cache hit, deserializes from in-memory
+/// JSON bytes (no disk IO). On miss, reads from disk and populates cache.
 fn get_or_load_model() -> Result<(RfModel, ModelInfo, Option<ScalerParams>), String> {
     let cache = get_model_cache();
     let guard = cache.lock().map_err(|e| format!("Model cache lock poisoned: {}", e))?;
 
     if let Some(ref cached) = *guard {
-        // Cache hit — return the pre-deserialized model.
-        // We serialize/deserialize the model via serde to "clone" it since
-        // smartcore types don't implement Clone. This is fast from memory.
-        let model_json = serde_json::to_string(&cached.model)
-            .map_err(|e| format!("Failed to re-serialize cached model: {}", e))?;
-        let model: RfModel = serde_json::from_str(&model_json)
+        // Cache hit: deserialize from in-memory JSON (fast, no disk IO).
+        let model: RfModel = serde_json::from_str(&cached.model_json)
             .map_err(|e| format!("Failed to deserialize cached model: {}", e))?;
         return Ok((model, cached.info.clone(), cached.scaler.clone()));
     }
 
     drop(guard); // Release lock before disk IO.
 
-    // Cache miss — load from disk.
-    let (model, info, scaler) = load_model_from_disk_full()?;
+    // Cache miss: load from disk.
+    let model_path = default_model_path();
+    if !model_path.exists() {
+        return Err("No trained model found. Run 'train_local_model' first.".to_string());
+    }
 
-    // Store in cache for next time.
-    let model_for_cache = load_model_from_disk_raw()?;
+    let bytes = std::fs::read(&model_path)
+        .map_err(|e| format!("Failed to read model from {:?}: {}", model_path, e))?;
+
+    let container: ModelContainer = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Failed to deserialize model container: {}", e))?;
+
+    let model: RfModel = serde_json::from_str(&container.model_json)
+        .map_err(|e| format!("Failed to deserialize model: {}", e))?;
+
+    // Populate cache with the model JSON string (stays in memory).
     if let Ok(mut guard) = cache.lock() {
-        *guard = Some(CachedModel {
-            model: model_for_cache,
-            info: info.clone(),
-            scaler: scaler.clone(),
+        *guard = Some(CachedModelBytes {
+            model_json: container.model_json,
+            info: container.info.clone(),
+            scaler: container.scaler.clone(),
         });
     }
 
-    Ok((model, info, scaler))
+    Ok((model, container.info, container.scaler))
 }
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -780,37 +787,6 @@ fn save_model_to_disk(model: &RfModel, info: &ModelInfo, scaler: &ScalerParams) 
     Ok(())
 }
 
-/// Load the full model + info + scaler from disk.
-fn load_model_from_disk_full() -> Result<(RfModel, ModelInfo, Option<ScalerParams>), String> {
-    let model_path = default_model_path();
-
-    if !model_path.exists() {
-        return Err("No trained model found. Run 'train_local_model' first.".to_string());
-    }
-
-    let bytes = std::fs::read(&model_path)
-        .map_err(|e| format!("Failed to read model from {:?}: {}", model_path, e))?;
-
-    let container: ModelContainer = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("Failed to deserialize model container: {}", e))?;
-
-    let model: RfModel = serde_json::from_str(&container.model_json)
-        .map_err(|e| format!("Failed to deserialize model: {}", e))?;
-
-    Ok((model, container.info, container.scaler))
-}
-
-/// Load just the raw RfModel from disk (for caching purposes).
-fn load_model_from_disk_raw() -> Result<RfModel, String> {
-    let model_path = default_model_path();
-    let bytes = std::fs::read(&model_path)
-        .map_err(|e| format!("Failed to read model: {}", e))?;
-    let container: ModelContainer = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("Failed to parse model container: {}", e))?;
-    serde_json::from_str(&container.model_json)
-        .map_err(|e| format!("Failed to deserialize model: {}", e))
-}
-
 /// Get model status without loading the full model.
 fn load_model_info() -> Result<ModelInfo, String> {
     let info_path = default_model_info_path();
@@ -837,11 +813,34 @@ fn load_model_info() -> Result<ModelInfo, String> {
     Ok(info)
 }
 
-// ── Prediction ───────────────────────────────────────────────────────
+// ── Prediction (batched) ─────────────────────────────────────────────
+//
+// Instead of calling model.predict() once per symbol (600 calls with
+// a 1-row DenseMatrix each), we:
+//   1. Extract features for all symbols in parallel (rayon)
+//   2. Build one big flat feature matrix (600 x 10)
+//   3. Apply scaler normalization
+//   4. Call model.predict() ONCE on the entire batch
+//   5. Map predictions back to symbols
+//
+// This is dramatically faster because smartcore's predict() has per-call
+// overhead (tree traversal setup, memory allocation) that is amortized
+// across the batch.
+
+/// Intermediate: extracted features for a symbol, ready for batching.
+struct SymbolFeatureRow {
+    symbol: String,
+    features: [f64; NUM_FEATURES],
+    /// Raw (un-normalized) feature values for the response.
+    raw_features: FeatureValues,
+}
 
 /// Run prediction on a list of symbols using the saved RF model.
+///
+/// Optimized: features extracted in parallel, predictions batched into
+/// a single model.predict() call.
 pub fn predict_with_model(params: &MlPredictParams) -> Result<PredictResult, String> {
-    let (model, info) = load_model_from_disk()?;
+    let (model, info, scaler) = get_or_load_model()?;
 
     let cache_dir = data::get_cache_dir();
     let region = if params.region.is_empty() { "us" } else { &params.region };
@@ -858,95 +857,80 @@ pub fn predict_with_model(params: &MlPredictParams) -> Result<PredictResult, Str
         symbols = data::list_available_symbols(region, &cache_dir);
     }
 
-    info!("ml_predict: predicting for {} symbols with RF model", symbols.len());
+    info!("ml_predict: predicting for {} symbols with RF model (batched)", symbols.len());
 
-    // Extract features for the latest bar of each symbol and predict.
-    let predictions: Vec<Option<RfPrediction>> = symbols
+    // 1. Extract features for all symbols in parallel.
+    let feature_rows: Vec<SymbolFeatureRow> = symbols
         .par_iter()
-        .map(|sym| {
+        .filter_map(|sym| {
             let bars = data::load_bars(sym, region, &cache_dir)?;
             if bars.len() < 50 {
                 return None;
             }
 
-            let n = bars.len();
-            let last = n - 1;
+            let last = bars.len() - 1;
+            let ind = SymbolIndicators::compute(&bars);
 
-            let rsi = indicators::compute_rsi(&bars.closes, 14);
-            let ema9 = indicators::compute_ema(&bars.closes, 9);
-            let ema21 = indicators::compute_ema(&bars.closes, 21);
-            let atr = indicators::compute_atr(&bars.highs, &bars.lows, &bars.closes, 14);
-            let (bb_u, bb_m, bb_l) = indicators::compute_bbands(&bars.closes, 20, 2.0);
+            let features = extract_features_at(&bars, &ind, last)?;
 
-            if rsi[last].is_nan() || ema9[last].is_nan() || ema21[last].is_nan() {
-                return None;
-            }
-
-            let atr_14 = if atr[last].is_nan() { 0.0 } else { atr[last] };
-
-            let bb_width = if !bb_u[last].is_nan() && !bb_l[last].is_nan() {
-                (bb_u[last] - bb_l[last]) / (bb_m[last] + 1e-10)
-            } else {
-                0.0
+            // Build raw (un-normalized) feature values for the response.
+            let raw_features = FeatureValues {
+                rsi_14: round4(features[0]),
+                ema_9: round4(features[1]),
+                ema_21: round4(features[2]),
+                atr_14: round4(features[3]),
+                bb_width: round4(features[4]),
+                returns_1d: round6(features[5]),
+                returns_5d: round6(features[6]),
+                returns_20d: round6(features[7]),
+                volume_ratio: round4(features[8]),
+                close: round4(features[9]),
             };
 
-            let returns_1d = if last > 0 {
-                (bars.closes[last] - bars.closes[last - 1]) / bars.closes[last - 1]
-            } else {
-                0.0
-            };
+            Some(SymbolFeatureRow {
+                symbol: sym.clone(),
+                features,
+                raw_features,
+            })
+        })
+        .collect();
 
-            let idx_5 = if last >= 5 { last - 5 } else { 0 };
-            let returns_5d =
-                (bars.closes[last] - bars.closes[idx_5]) / bars.closes[idx_5];
+    if feature_rows.is_empty() {
+        return Ok(PredictResult {
+            status: "completed".to_string(),
+            predictions: Vec::new(),
+            model_info: info,
+        });
+    }
 
-            let idx_20 = if last >= 20 { last - 20 } else { 0 };
-            let returns_20d =
-                (bars.closes[last] - bars.closes[idx_20]) / bars.closes[idx_20];
+    // 2. Build flat feature matrix for batched prediction.
+    let n_rows = feature_rows.len();
+    let mut flat: Vec<f64> = Vec::with_capacity(n_rows * NUM_FEATURES);
+    for row in &feature_rows {
+        flat.extend_from_slice(&row.features);
+    }
 
-            let volume_ratio = if bars.volumes.iter().any(|&v| v > 0.0) {
-                let start = if last >= 20 { last - 20 } else { 0 };
-                let window = &bars.volumes[start..last];
-                if !window.is_empty() {
-                    let avg_vol = window.iter().sum::<f64>() / window.len() as f64;
-                    bars.volumes[last] / (avg_vol + 1e-10)
-                } else {
-                    1.0
-                }
-            } else {
-                1.0
-            };
+    // 3. Apply scaler normalization if available.
+    if let Some(ref sc) = scaler {
+        normalize_features_inplace(&mut flat, n_rows, sc);
+    }
 
-            let feature_vec = vec![
-                rsi[last],
-                ema9[last],
-                ema21[last],
-                atr_14,
-                bb_width,
-                returns_1d,
-                returns_5d,
-                returns_20d,
-                volume_ratio,
-                bars.closes[last],
-            ];
+    // 4. Batched prediction: one call for all symbols.
+    let x = flat_to_dense_matrix(&flat, n_rows, NUM_FEATURES)?;
+    let batch_preds = model
+        .predict(&x)
+        .map_err(|e| format!("Batch prediction failed: {}", e))?;
 
-            // Skip if any feature is NaN/Inf.
-            if feature_vec.iter().any(|v| v.is_nan() || v.is_infinite()) {
-                return None;
-            }
+    info!("ml_predict: batch predicted {} symbols in one call", n_rows);
 
-            let refs: Vec<&[f64]> = vec![feature_vec.as_slice()];
-            let x = DenseMatrix::from_2d_array(&refs).ok()?;
-
-            let pred = model.predict(&x).ok()?;
-            let prediction = pred[0];
-
-            // Confidence: use the majority vote ratio as a rough proxy.
-            // With a single sample, we just use model accuracy as base confidence.
+    // 5. Map predictions back to symbols.
+    let results: Vec<RfPrediction> = feature_rows
+        .into_iter()
+        .zip(batch_preds.into_iter())
+        .map(|(row, prediction)| {
             let confidence = if prediction == 1 {
                 (info.precision * 0.7 + info.accuracy * 0.3).min(0.95)
             } else {
-                // For negative predictions, base on specificity approximation.
                 (info.accuracy * 0.8 + 0.1).min(0.95)
             };
 
@@ -956,34 +940,58 @@ pub fn predict_with_model(params: &MlPredictParams) -> Result<PredictResult, Str
                 "short".to_string()
             };
 
-            Some(RfPrediction {
-                symbol: sym.clone(),
+            RfPrediction {
+                symbol: row.symbol,
                 prediction,
                 direction,
                 confidence: round4(confidence),
-                features: FeatureValues {
-                    rsi_14: round4(rsi[last]),
-                    ema_9: round4(ema9[last]),
-                    ema_21: round4(ema21[last]),
-                    atr_14: round4(atr_14),
-                    bb_width: round4(bb_width),
-                    returns_1d: round6(returns_1d),
-                    returns_5d: round6(returns_5d),
-                    returns_20d: round6(returns_20d),
-                    volume_ratio: round4(volume_ratio),
-                    close: round4(bars.closes[last]),
-                },
-            })
+                features: row.raw_features,
+            }
         })
         .collect();
-
-    let results: Vec<RfPrediction> = predictions.into_iter().flatten().collect();
 
     Ok(PredictResult {
         status: "completed".to_string(),
         predictions: results,
         model_info: info,
     })
+}
+
+/// Extract features for the latest bar of a single symbol.
+/// Public so scanner/backtest modules can use the trained RF model.
+pub fn extract_latest_features(bars: &OhlcvBars) -> Option<[f64; NUM_FEATURES]> {
+    if bars.len() < 50 {
+        return None;
+    }
+    let last = bars.len() - 1;
+    let ind = SymbolIndicators::compute(bars);
+    extract_features_at(bars, &ind, last)
+}
+
+/// Predict a single symbol using the cached model. Returns (prediction, confidence).
+/// Intended for use by scanner/backtest modules for ML-enhanced signals.
+pub fn predict_single(features: &[f64; NUM_FEATURES]) -> Option<(i32, f64)> {
+    let (model, info, scaler) = get_or_load_model().ok()?;
+
+    let mut norm_features = features.to_vec();
+    if let Some(ref sc) = scaler {
+        for (i, val) in norm_features.iter_mut().enumerate() {
+            *val = (*val - sc.means[i]) / sc.stds[i];
+        }
+    }
+
+    let refs: Vec<&[f64]> = vec![norm_features.as_slice()];
+    let x = DenseMatrix::from_2d_array(&refs).ok()?;
+    let preds = model.predict(&x).ok()?;
+    let prediction = preds[0];
+
+    let confidence = if prediction == 1 {
+        (info.precision * 0.7 + info.accuracy * 0.3).min(0.95)
+    } else {
+        (info.accuracy * 0.8 + 0.1).min(0.95)
+    };
+
+    Some((prediction, confidence))
 }
 
 // ============================================================================
@@ -1111,9 +1119,64 @@ mod tests {
         // Test serde defaults by deserializing empty JSON.
         let params: MlTrainParams = serde_json::from_str("{}").unwrap();
         assert_eq!(params.region, "us");
-        assert_eq!(params.n_trees, 100);
-        assert_eq!(params.max_depth, 10);
+        assert_eq!(params.n_trees, 150);
+        assert_eq!(params.max_depth, 12);
         assert_eq!(params.forward_days, 5);
         assert!((params.test_split - 0.2).abs() < 1e-9);
+        assert_eq!(params.walk_forward_folds, 5);
+    }
+
+    #[test]
+    fn test_compute_scaler() {
+        // 3 samples x 10 features (all same value per feature).
+        let mut flat = vec![0.0; 30];
+        for row in 0..3 {
+            for col in 0..10 {
+                flat[row * 10 + col] = (col + 1) as f64;
+            }
+        }
+        let scaler = compute_scaler(&flat, 3);
+        assert_eq!(scaler.means.len(), 10);
+        assert_eq!(scaler.stds.len(), 10);
+        for col in 0..10 {
+            assert!((scaler.means[col] - (col + 1) as f64).abs() < 1e-9);
+            // All values identical => std would be 0, but we clamp to 1.0.
+            assert!((scaler.stds[col] - 1.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_extract_features_at() {
+        let n = 100;
+        let mut closes = Vec::with_capacity(n);
+        let mut highs = Vec::with_capacity(n);
+        let mut lows = Vec::with_capacity(n);
+        let mut opens = Vec::with_capacity(n);
+        let mut volumes = Vec::with_capacity(n);
+        let mut dates = Vec::with_capacity(n);
+        for i in 0..n {
+            let price = 100.0 + (i as f64) * 0.5;
+            closes.push(price);
+            highs.push(price + 1.0);
+            lows.push(price - 1.0);
+            opens.push(price - 0.2);
+            volumes.push(1000.0 + (i as f64) * 10.0);
+            dates.push(format!("2025-01-{:02}", (i % 28) + 1));
+        }
+        let bars = OhlcvBars { dates, opens, highs, lows, closes, volumes };
+        let ind = SymbolIndicators::compute(&bars);
+        // Bar 49 should have valid features.
+        let features = extract_features_at(&bars, &ind, 49);
+        assert!(features.is_some());
+        let f = features.unwrap();
+        assert_eq!(f.len(), NUM_FEATURES);
+        assert!(f.iter().all(|v| !v.is_nan() && !v.is_infinite()));
+    }
+
+    #[test]
+    fn test_flat_to_dense_matrix() {
+        let flat = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let m = flat_to_dense_matrix(&flat, 2, 3);
+        assert!(m.is_ok());
     }
 }

@@ -13,6 +13,7 @@
 
 use log::{error, info, warn};
 use rayon::prelude::*;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -526,4 +527,91 @@ pub fn execute_jobs_batch_sync(
             (job_id, result)
         })
         .collect()
+}
+
+// ─── Data prefetch for job batches ────────────────────────────────────────────
+
+/// Extract all symbols referenced by a batch of jobs and prefetch their OHLCV
+/// data into the in-memory LRU cache in parallel.
+///
+/// This is called by the grid worker BEFORE dispatching jobs. When a batch of
+/// 50 jobs arrives for different symbols, loading all their Parquet files into
+/// memory up-front (via rayon parallel I/O) means the actual compute phase
+/// sees only LRU cache hits -- zero disk I/O during backtest/scan/ML work.
+///
+/// Returns the number of symbols prefetched from disk (cache misses).
+pub fn prefetch_batch_data(jobs: &[serde_json::Value]) -> usize {
+    if jobs.is_empty() {
+        return 0;
+    }
+
+    let cache_dir = crate::compute::data::get_cache_dir();
+    let mut symbols_by_region: std::collections::HashMap<String, HashSet<String>> =
+        std::collections::HashMap::new();
+
+    for job in jobs {
+        let params = job.get("params").unwrap_or(job);
+
+        // Extract region (default to "us").
+        let region = params["region"]
+            .as_str()
+            .unwrap_or("us")
+            .to_string();
+
+        // Extract symbols from various param shapes.
+        let region_symbols = symbols_by_region
+            .entry(region)
+            .or_insert_with(HashSet::new);
+
+        // Single symbol field.
+        if let Some(sym) = params["symbol"].as_str() {
+            if !sym.is_empty() {
+                region_symbols.insert(sym.to_uppercase());
+            }
+        }
+
+        // Symbol universe array (backtests).
+        if let Some(arr) = params["symbol_universe"].as_array() {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    if !s.is_empty() {
+                        region_symbols.insert(s.to_uppercase());
+                    }
+                }
+            }
+        }
+
+        // Symbols array (scans, ML, features).
+        if let Some(arr) = params["symbols"].as_array() {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    if !s.is_empty() {
+                        region_symbols.insert(s.to_uppercase());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut total_prefetched = 0usize;
+
+    for (region, symbols) in &symbols_by_region {
+        if symbols.is_empty() {
+            continue;
+        }
+        let sym_vec: Vec<String> = symbols.iter().cloned().collect();
+        let count = crate::compute::data::prefetch_symbols(&sym_vec, region, &cache_dir);
+        total_prefetched += count;
+    }
+
+    if total_prefetched > 0 {
+        info!(
+            "job_executor: prefetched {} symbols across {} regions for {} jobs",
+            total_prefetched,
+            symbols_by_region.len(),
+            jobs.len()
+        );
+    }
+
+    total_prefetched
 }

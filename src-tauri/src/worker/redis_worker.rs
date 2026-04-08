@@ -106,7 +106,7 @@ pub async fn run_redis_worker(
     let feeder_worker_id = worker_id.clone();
     let feeder_in_flight = in_flight.clone();
     // Share the multiplexed connection -- no new socket needed.
-    let mut feeder_conn = redis_conn.clone();
+    let feeder_conn = redis_conn.clone();
 
     let feeder_handle = tokio::spawn(async move {
         let mut conn = feeder_conn;
@@ -312,10 +312,10 @@ pub async fn run_redis_worker(
     drop(result_tx);
 
     // ─── Reporter Task ──────────────────────────────────────────
-    let reporter_shutdown = shutdown.clone();
+    let _reporter_shutdown = shutdown.clone();
     let reporter_api_url = api_url.clone();
     let reporter_token = token.clone();
-    let reporter_worker_id = worker_id.clone();
+    let _reporter_worker_id = worker_id.clone();
     // Share the multiplexed connection -- no new socket per flush.
     let mut reporter_conn = redis_conn.clone();
 
@@ -361,7 +361,7 @@ pub async fn run_redis_worker(
     let hb_completed = jobs_completed.clone();
     let hb_failed = jobs_failed.clone();
     // Share the multiplexed connection -- no new socket needed.
-    let mut hb_conn = redis_conn.clone();
+    let hb_conn = redis_conn.clone();
 
     let hb_handle = tokio::spawn(async move {
         let mut conn = hb_conn;
@@ -432,11 +432,14 @@ pub async fn run_redis_worker(
 }
 
 /// Flush a batch of results to the API and clean up Redis leases.
-async fn flush_batch(
+///
+/// Uses a shared `MultiplexedConnection` reference instead of opening
+/// a new connection per flush -- avoids TCP handshake overhead.
+async fn flush_batch_conn(
     client: &reqwest::Client,
     api_url: &str,
     token: &str,
-    redis_client: &redis::Client,
+    redis_conn: &mut redis::aio::MultiplexedConnection,
     batch: &mut Vec<JobResult>,
 ) {
     if batch.is_empty() {
@@ -448,6 +451,10 @@ async fn flush_batch(
         .filter(|r| r.status == "completed")
         .map(|r| r.job_id.clone())
         .collect();
+    let failed_ids: Vec<String> = batch.iter()
+        .filter(|r| r.status == "failed")
+        .map(|r| r.job_id.clone())
+        .collect();
 
     // Build API payload
     let results: Vec<serde_json::Value> = batch.iter().map(|r| {
@@ -456,6 +463,7 @@ async fn flush_batch(
             "status": r.status,
             "metrics": r.metrics,
             "error": r.error,
+            "compute_seconds": r.compute_seconds,
         })
     }).collect();
 
@@ -469,7 +477,8 @@ async fn flush_batch(
 
     match resp {
         Ok(r) if r.status().is_success() => {
-            info!("redis_worker/reporter: flushed {count} results to API");
+            info!("redis_worker/reporter: flushed {count} results to API ({} ok, {} failed)",
+                  completed_ids.len(), failed_ids.len());
         }
         Ok(r) => {
             warn!("redis_worker/reporter: API returned {}: batch of {count}", r.status());
@@ -479,16 +488,16 @@ async fn flush_batch(
         }
     }
 
-    // Clean up Redis leases for completed jobs
-    if !completed_ids.is_empty() {
-        if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await {
-            let mut pipe = redis::pipe();
-            for id in &completed_ids {
-                pipe.cmd("DEL").arg(format!("aura:lease:{id}"));
-                pipe.cmd("DEL").arg(format!("aura:job:{id}"));
-            }
-            let _: Result<(), _> = pipe.query_async(&mut conn).await;
+    // Clean up Redis leases and job hashes for all completed/failed jobs
+    // in a single pipeline (one round-trip).
+    let all_done_ids: Vec<&String> = completed_ids.iter().chain(failed_ids.iter()).collect();
+    if !all_done_ids.is_empty() {
+        let mut pipe = redis::pipe();
+        for id in &all_done_ids {
+            pipe.cmd("DEL").arg(format!("aura:lease:{id}"));
+            pipe.cmd("DEL").arg(format!("aura:job:{id}"));
         }
+        let _: Result<(), _> = pipe.query_async(redis_conn).await;
     }
 
     batch.clear();

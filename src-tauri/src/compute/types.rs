@@ -136,6 +136,134 @@ pub struct FeatureValues {
     pub close: f64,
 }
 
+/// Column-major (struct-of-arrays) feature matrix for batch ML workloads.
+///
+/// Each column is a contiguous f64 slice -- all RSI values together, all EMA values
+/// together, etc. This layout is cache-line friendly for ML training where the model
+/// reads one feature across all samples (column scan pattern), and enables SIMD
+/// auto-vectorization of per-column normalization.
+///
+/// Column order matches `FeatureValues` field order (same as NUM_FEATURES = 10):
+/// [rsi_14, ema_9, ema_21, atr_14, bb_width, returns_1d, returns_5d, returns_20d, volume_ratio, close]
+#[derive(Debug, Clone, Serialize)]
+pub struct FeatureMatrix {
+    /// Column names for documentation/debugging.
+    pub column_names: Vec<String>,
+    /// Number of symbols (rows) in the matrix.
+    pub n_rows: usize,
+    /// Number of features (columns) -- always 10.
+    pub n_cols: usize,
+    /// Column-major storage: columns[col_idx][row_idx].
+    /// Each inner Vec is a contiguous f64 slice of length n_rows.
+    pub columns: Vec<Vec<f64>>,
+    /// Symbol names corresponding to each row.
+    pub symbols: Vec<String>,
+    /// Dates corresponding to each row.
+    pub dates: Vec<String>,
+}
+
+impl FeatureMatrix {
+    /// Feature column names in canonical order.
+    pub const COLUMN_NAMES: [&'static str; 10] = [
+        "rsi_14", "ema_9", "ema_21", "atr_14", "bb_width",
+        "returns_1d", "returns_5d", "returns_20d", "volume_ratio", "close",
+    ];
+
+    /// Create an empty feature matrix with pre-allocated columns.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            column_names: Self::COLUMN_NAMES.iter().map(|s| s.to_string()).collect(),
+            n_rows: 0,
+            n_cols: 10,
+            columns: (0..10).map(|_| Vec::with_capacity(capacity)).collect(),
+            symbols: Vec::with_capacity(capacity),
+            dates: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Push a row of features (from a FeatureValues struct).
+    pub fn push_row(&mut self, symbol: String, date: String, fv: &FeatureValues) {
+        self.columns[0].push(fv.rsi_14);
+        self.columns[1].push(fv.ema_9);
+        self.columns[2].push(fv.ema_21);
+        self.columns[3].push(fv.atr_14);
+        self.columns[4].push(fv.bb_width);
+        self.columns[5].push(fv.returns_1d);
+        self.columns[6].push(fv.returns_5d);
+        self.columns[7].push(fv.returns_20d);
+        self.columns[8].push(fv.volume_ratio);
+        self.columns[9].push(fv.close);
+        self.symbols.push(symbol);
+        self.dates.push(date);
+        self.n_rows += 1;
+    }
+
+    /// Normalize a single column in-place using z-score: (x - mean) / std.
+    /// Operates on a contiguous f64 slice -- SIMD auto-vectorizable.
+    pub fn normalize_column_inplace(&mut self, col_idx: usize) {
+        if col_idx >= self.n_cols || self.n_rows == 0 {
+            return;
+        }
+        let col = &mut self.columns[col_idx];
+        let n = col.len() as f64;
+
+        // Compute mean in one pass.
+        let mean: f64 = col.iter().sum::<f64>() / n;
+
+        // Compute std in one pass.
+        let variance: f64 = col.iter().map(|&x| {
+            let d = x - mean;
+            d * d
+        }).sum::<f64>() / n;
+        let std = if variance < 1e-20 { 1.0 } else { variance.sqrt() };
+
+        // Normalize in-place -- single contiguous slice, SIMD-friendly.
+        let inv_std = 1.0 / std;
+        for x in col.iter_mut() {
+            *x = (*x - mean) * inv_std;
+        }
+    }
+
+    /// Normalize all columns in-place.
+    pub fn normalize_all_inplace(&mut self) {
+        for col_idx in 0..self.n_cols {
+            self.normalize_column_inplace(col_idx);
+        }
+    }
+
+    /// Convert to row-major flat Vec<f64> (for compatibility with DenseMatrix).
+    /// Layout: [row0_col0, row0_col1, ..., row0_col9, row1_col0, ...]
+    pub fn to_flat_row_major(&self) -> Vec<f64> {
+        let mut flat = vec![0.0_f64; self.n_rows * self.n_cols];
+        for col in 0..self.n_cols {
+            for row in 0..self.n_rows {
+                flat[row * self.n_cols + col] = self.columns[col][row];
+            }
+        }
+        flat
+    }
+
+    /// Convert to Vec<FeatureRow> for IPC serialization (compatibility with existing API).
+    pub fn to_feature_rows(&self) -> Vec<FeatureRow> {
+        (0..self.n_rows).map(|i| FeatureRow {
+            symbol: self.symbols[i].clone(),
+            date: self.dates[i].clone(),
+            features: FeatureValues {
+                rsi_14: self.columns[0][i],
+                ema_9: self.columns[1][i],
+                ema_21: self.columns[2][i],
+                atr_14: self.columns[3][i],
+                bb_width: self.columns[4][i],
+                returns_1d: self.columns[5][i],
+                returns_5d: self.columns[6][i],
+                returns_20d: self.columns[7][i],
+                volume_ratio: self.columns[8][i],
+                close: self.columns[9][i],
+            },
+        }).collect()
+    }
+}
+
 /// Feature scores used inside ML prediction output.
 #[derive(Debug, Clone, Serialize)]
 pub struct MlFeatureScores {
@@ -272,6 +400,15 @@ pub struct ScanParams {
     pub ema_fast: usize,
     #[serde(default = "default_ema_slow")]
     pub ema_slow: usize,
+    /// Return only the top N signals by confidence (0 = return all).
+    #[serde(default)]
+    pub top_n: usize,
+    /// Minimum average volume on last bar to pass pre-filter (0 = no filter).
+    #[serde(default)]
+    pub min_volume: f64,
+    /// Minimum price on last bar to pass pre-filter (0 = no filter).
+    #[serde(default)]
+    pub min_price: f64,
 }
 
 fn default_region() -> String { "us".to_string() }
@@ -334,6 +471,18 @@ pub struct ScanJobResult {
     pub results: Vec<ScanSignal>,
     pub symbols_scanned: usize,
     pub signals_found: usize,
+    /// Wall-clock milliseconds for the scan.
+    #[serde(default)]
+    pub elapsed_ms: u64,
+    /// Number of symbols eliminated by the pre-filter.
+    #[serde(default)]
+    pub pre_filtered: usize,
+    /// Whether GPU batch dispatch was used.
+    #[serde(default)]
+    pub gpu_used: bool,
+    /// Number of symbols served from indicator cache.
+    #[serde(default)]
+    pub cache_hits: usize,
 }
 
 /// ML inference result returned to the frontend.

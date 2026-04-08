@@ -35,7 +35,7 @@ sha2 = "0.10"
 aes-gcm = "0.10"
 rand = "0.8"
 rayon = "1.10"
-polars = { version = "0.46", features = ["parquet", "csv", "lazy", "cloud"] }
+polars = { version = "0.46", features = ["parquet", "csv", "lazy"] }
 lru = "0.12"
 smartcore = { version = "0.4", features = ["serde"] }
 bytemuck = { version = "1", features = ["derive"] }
@@ -52,8 +52,18 @@ gpu = ["wgpu"]
 libc = "0.2"
 
 [profile.release]
-opt-level = "z"      # optimize for size
-lto = true           # link-time optimization
-codegen-units = 1    # single codegen unit for better optimization
-strip = true         # strip debug symbols
-panic = "abort"      # smaller binary, no unwinding
+opt-level = 3        # maximum speed (NOT "z" — this is a compute engine, not a microcontroller)
+lto = "fat"          # full cross-crate LTO: enables dead code elimination across all crates
+codegen-units = 1    # single codegen unit: better inlining + optimization at cost of compile time
+strip = true         # strip debug symbols from binary
+panic = "abort"      # no unwind tables: smaller binary + faster panics (we use crash_reporter)
+
+# Profile-Guided Optimization (PGO) build steps:
+# 1. Build instrumented:  RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" cargo build --release
+# 2. Run a representative workload (backtest 200 symbols, full scan, ML inference)
+# 3. Merge profiles:      llvm-profdata merge -o /tmp/pgo-data/merged.profdata /tmp/pgo-data
+# 4. Build optimized:     RUSTFLAGS="-Cprofile-use=/tmp/pgo-data/merged.profdata" cargo build --release
+# PGO typically yields 10-20% additional speedup on hot paths (indicator loops, backtest sim).
+
+[profile.dev]
+opt-level = 1        # slightly optimized dev builds so rayon/polars aren't painfully slow

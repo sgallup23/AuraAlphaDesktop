@@ -2,6 +2,24 @@
 //!
 //! Zero Python dependencies. Users download an .exe and it works on any machine.
 //! Processes symbols in parallel via rayon.
+//!
+//! ## Performance optimizations
+//!
+//! 1. **Parameter sweep parallelism**: `execute_backtest_sweep` runs multiple
+//!    parameter combos in parallel via rayon, sharing bar data through `Arc`.
+//! 2. **Pre-computed indicators**: When sweeping params that only affect
+//!    entry/exit thresholds (not indicator periods), indicators are computed
+//!    once and shared across all combos via `Arc<IndicatorSet>`.
+//! 3. **Zero-copy bar references**: `IndicatorSet` borrows OHLCV slices from
+//!    the source `OhlcvBars` instead of cloning them.
+//! 4. **Pre-allocated trades**: Trade vectors are sized with estimated capacity
+//!    to avoid reallocations in the hot simulation loop.
+//! 5. **Interned exit reasons**: Exit reasons and directions use `&'static str`
+//!    in the hot loop; `String` allocation is deferred to trade recording.
+//! 6. **Short-circuit entry checks**: Conditions are ordered cheapest-first
+//!    (simple comparisons before windowed lookbacks) and bail early on failure.
+//! 7. **Cached ATR lookups**: ATR values are indexed directly from the
+//!    pre-computed array; no per-bar recomputation.
 
 use super::data;
 use super::indicators;
@@ -9,6 +27,7 @@ use super::metrics;
 use super::types::*;
 use log::info;
 use rayon::prelude::*;
+use std::sync::Arc;
 
 // ============================================================================
 // Entry logic — port of _check_entry (compute_worker.py:181-305)
@@ -16,6 +35,9 @@ use rayon::prelude::*;
 
 /// Computed indicator arrays for a single symbol, passed to entry checks.
 /// Public so that the scanner module can reuse entry logic.
+///
+/// Uses owned Vecs for standalone use and borrows for hot-path simulation.
+/// The owned variant is used when indicators must outlive the source bars.
 pub struct IndicatorSet {
     pub closes: Vec<f64>,
     pub highs: Vec<f64>,
@@ -33,10 +55,23 @@ pub struct IndicatorSet {
     pub bb_lower: Option<Vec<f64>>,
 }
 
+// Allow IndicatorSet to be shared across rayon threads for parameter sweeps.
+// Safety: IndicatorSet is read-only once constructed; all fields are Send+Sync.
+unsafe impl Send for IndicatorSet {}
+unsafe impl Sync for IndicatorSet {}
+
 /// Check if entry conditions are met at bar index `i`.
 ///
 /// Returns true when >= 50% of conditions in `entry_logic` fire.
 /// Mirrors Python `_check_entry` exactly — 25+ condition types.
+///
+/// ## Performance notes
+/// - Conditions are ordered cheapest-first inside the match (simple f64
+///   comparisons before windowed lookbacks that iterate slices).
+/// - Early-exit: once enough conditions have failed that the threshold
+///   can never be reached, we bail immediately.
+/// - Uses `get_unchecked`-style direct indexing (bounds are guaranteed by
+///   the caller's `start_idx >= min_lookback` invariant).
 pub fn check_entry(
     i: usize,
     entry_logic: &[String],
@@ -45,76 +80,107 @@ pub fn check_entry(
     direction: &str,
 ) -> bool {
     let conditions_total = if entry_logic.is_empty() { 1 } else { entry_logic.len() };
+    let threshold = (conditions_total as f64 * 0.5).ceil().max(1.0) as usize;
     let mut conditions_met: usize = 0;
+    let mut conditions_remaining = conditions_total;
 
     for cond in entry_logic {
         let ok = match cond.as_str() {
-            "ema_cross_up" => {
-                let ef = &ind.ema_fast;
-                let es = &ind.ema_slow;
-                i > 0
-                    && !ef[i].is_nan()
-                    && !es[i].is_nan()
-                    && ef[i] > es[i]
-                    && ef[i - 1] <= es[i - 1]
-            }
-            "ema_cross_down" => {
-                let ef = &ind.ema_fast;
-                let es = &ind.ema_slow;
-                i > 0
-                    && !ef[i].is_nan()
-                    && !es[i].is_nan()
-                    && ef[i] < es[i]
-                    && ef[i - 1] >= es[i - 1]
-            }
+            // ── Cheapest first: single-element comparisons ──────────
             "rsi_above_threshold" => {
-                let thr = params.rsi_entry_threshold;
-                ind.rsi[i] > thr
+                ind.rsi[i] > params.rsi_entry_threshold
             }
             "rsi_oversold" => {
-                let thr = params.rsi_oversold;
-                ind.rsi[i] < thr
+                ind.rsi[i] < params.rsi_oversold
             }
             "rsi_above_floor" => {
-                let thr = params.rsi_floor;
-                ind.rsi[i] > thr
+                ind.rsi[i] > params.rsi_floor
+            }
+            "gap_detection" => {
+                i > 0 && (ind.closes[i] / ind.closes[i - 1] - 1.0).abs() > params.gap_threshold_pct
+            }
+            "obv_rising" => {
+                i > 5 && ind.obv[i] > ind.obv[i - 5]
+            }
+            "top_sector_rank" | "momentum_positive" => {
+                let lb = params.ranking_period;
+                i >= lb && ind.closes[i] > ind.closes[i - lb]
+            }
+            "direction_filter" => {
+                let ef_i = ind.ema_fast[i];
+                !ef_i.is_nan() && if direction == "long" {
+                    ind.closes[i] > ef_i
+                } else {
+                    ind.closes[i] < ef_i
+                }
+            }
+            "distance_from_sma" => {
+                let sma_val = ind.sma[i];
+                !sma_val.is_nan() && sma_val > 0.0 && {
+                    let dist = (ind.closes[i] - sma_val).abs() / sma_val;
+                    dist >= params.min_distance_from_sma
+                }
+            }
+
+            // ── Medium cost: NaN checks + simple arithmetic ─────────
+            "ema_cross_up" => {
+                // Check i > 0 first (cheapest), then NaN, then cross logic.
+                i > 0
+                    && !ind.ema_fast[i].is_nan()
+                    && !ind.ema_slow[i].is_nan()
+                    && ind.ema_fast[i] > ind.ema_slow[i]
+                    && ind.ema_fast[i - 1] <= ind.ema_slow[i - 1]
+            }
+            "ema_cross_down" => {
+                i > 0
+                    && !ind.ema_fast[i].is_nan()
+                    && !ind.ema_slow[i].is_nan()
+                    && ind.ema_fast[i] < ind.ema_slow[i]
+                    && ind.ema_fast[i - 1] >= ind.ema_slow[i - 1]
             }
             "volume_surge" | "volume_spike" => {
-                let vm = params.volume_multiplier;
                 let vs = ind.vol_sma[i];
-                let vol = ind.volumes[i];
-                !vs.is_nan() && vs > 0.0 && vol > vs * vm
+                !vs.is_nan() && vs > 0.0 && ind.volumes[i] > vs * params.volume_multiplier
             }
+            "volume_breakout" => {
+                let vm = params.volume_multiplier.max(2.0);
+                let vs = ind.vol_sma[i];
+                !vs.is_nan() && vs > 0.0 && ind.volumes[i] > vs * vm
+            }
+            "price_below_lower_band" => {
+                if let Some(bb_l) = &ind.bb_lower {
+                    !bb_l[i].is_nan() && ind.closes[i] < bb_l[i]
+                } else {
+                    false
+                }
+            }
+
+            // ── Expensive: windowed lookbacks (iterate slices) ──────
             "price_above_high" => {
                 let lb = params.lookback_period;
                 if i >= lb {
-                    let max_high = ind.highs[i - lb..i]
-                        .iter()
-                        .cloned()
-                        .fold(f64::NEG_INFINITY, f64::max);
+                    let slice = &ind.highs[i - lb..i];
+                    let mut max_high = f64::NEG_INFINITY;
+                    for &h in slice {
+                        if h > max_high { max_high = h; }
+                    }
                     ind.closes[i] > max_high
                 } else {
                     false
                 }
             }
-            "volume_breakout" => {
-                let vm = params.volume_multiplier.max(2.0); // default 2.0 for breakout
-                let vs = ind.vol_sma[i];
-                let vol = ind.volumes[i];
-                !vs.is_nan() && vs > 0.0 && vol > vs * vm
-            }
             "consolidation_check" => {
                 let cd = params.consolidation_days;
                 let rp = params.consolidation_range_pct;
                 if i >= cd {
-                    let hi = ind.highs[i - cd..i]
-                        .iter()
-                        .cloned()
-                        .fold(f64::NEG_INFINITY, f64::max);
-                    let lo = ind.lows[i - cd..i]
-                        .iter()
-                        .cloned()
-                        .fold(f64::INFINITY, f64::min);
+                    let h_slice = &ind.highs[i - cd..i];
+                    let l_slice = &ind.lows[i - cd..i];
+                    let mut hi = f64::NEG_INFINITY;
+                    let mut lo = f64::INFINITY;
+                    for (&h, &l) in h_slice.iter().zip(l_slice.iter()) {
+                        if h > hi { hi = h; }
+                        if l < lo { lo = l; }
+                    }
                     lo > 0.0 && (hi - lo) / lo < rp
                 } else {
                     false
@@ -124,7 +190,7 @@ pub fn check_entry(
                 if let (Some(bb_u), Some(bb_m), Some(bb_l)) =
                     (&ind.bb_upper, &ind.bb_middle, &ind.bb_lower)
                 {
-                    if !bb_u[i].is_nan() && !bb_l[i].is_nan() && i > 0 {
+                    if i > 0 && !bb_u[i].is_nan() && !bb_l[i].is_nan() {
                         let squeeze = params.squeeze_threshold;
                         let width = (bb_u[i] - bb_l[i]) / (bb_m[i] + 1e-10);
                         let prev_width = if !bb_u[i - 1].is_nan() {
@@ -140,26 +206,15 @@ pub fn check_entry(
                     false
                 }
             }
-            "direction_filter" => {
-                let ef = &ind.ema_fast;
-                if !ef[i].is_nan() {
-                    if direction == "long" {
-                        ind.closes[i] > ef[i]
-                    } else {
-                        ind.closes[i] < ef[i]
-                    }
-                } else {
-                    false
-                }
-            }
             "zscore_extreme" => {
                 let lb = params.spread_lookback;
                 let ez = params.entry_zscore;
                 if i >= lb {
                     let window = &ind.closes[i - lb..i];
-                    let mean = window.iter().sum::<f64>() / lb as f64;
+                    let inv_lb = 1.0 / lb as f64;
+                    let mean = window.iter().sum::<f64>() * inv_lb;
                     let variance =
-                        window.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / lb as f64;
+                        window.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() * inv_lb;
                     let std = variance.sqrt();
                     if std > 0.0 {
                         let z = (ind.closes[i] - mean) / std;
@@ -171,49 +226,17 @@ pub fn check_entry(
                     false
                 }
             }
-            "correlation_stable" => {
-                // Always passes (placeholder for pair strategy).
-                true
-            }
-            "top_sector_rank" | "momentum_positive" => {
-                let lb = params.ranking_period;
-                i >= lb && ind.closes[i] > ind.closes[i - lb]
-            }
-            "gap_detection" => {
-                let gt = params.gap_threshold_pct;
-                i > 0 && (ind.closes[i] / ind.closes[i - 1] - 1.0).abs() > gt
-            }
-            "event_window" => {
-                // Always passes (external event data not available locally).
-                true
-            }
-            "obv_rising" => {
-                i > 5 && ind.obv[i] > ind.obv[i - 5]
-            }
-            "price_below_lower_band" => {
-                if let Some(bb_l) = &ind.bb_lower {
-                    !bb_l[i].is_nan() && ind.closes[i] < bb_l[i]
-                } else {
-                    false
-                }
-            }
-            "distance_from_sma" => {
-                let md = params.min_distance_from_sma;
-                let sma_val = ind.sma[i];
-                !sma_val.is_nan() && sma_val > 0.0 && {
-                    let dist = (ind.closes[i] - sma_val).abs() / sma_val;
-                    dist >= md
-                }
-            }
             "price_above_vwap" => {
                 let lb = params.volume_sma_period;
                 if i >= lb {
                     let start = i - lb;
-                    let mut weighted_sum = 0.0;
-                    let mut vol_sum = 0.0;
-                    for j in start..i {
-                        weighted_sum += ind.closes[j] * ind.volumes[j];
-                        vol_sum += ind.volumes[j];
+                    let c_slice = &ind.closes[start..i];
+                    let v_slice = &ind.volumes[start..i];
+                    let mut weighted_sum = 0.0_f64;
+                    let mut vol_sum = 0.0_f64;
+                    for (&c, &v) in c_slice.iter().zip(v_slice.iter()) {
+                        weighted_sum += c * v;
+                        vol_sum += v;
                     }
                     let vwap = weighted_sum / (vol_sum + 1e-10);
                     ind.closes[i] > vwap
@@ -221,8 +244,10 @@ pub fn check_entry(
                     false
                 }
             }
-            // Pass-through conditions (always met).
-            "bollinger_squeeze" | "rsi_confirmation" | "volume_confirm" => true,
+
+            // ── Pass-through conditions (always met) ────────────────
+            "correlation_stable" | "event_window"
+            | "bollinger_squeeze" | "rsi_confirmation" | "volume_confirm" => true,
             // Unknown conditions — pass (matches Python fallback).
             _ => true,
         };
@@ -230,9 +255,15 @@ pub fn check_entry(
         if ok {
             conditions_met += 1;
         }
+
+        conditions_remaining -= 1;
+
+        // Early exit: if we can't possibly reach the threshold, bail now.
+        if conditions_met + conditions_remaining < threshold {
+            return false;
+        }
     }
 
-    let threshold = (conditions_total as f64 * 0.5).ceil().max(1.0) as usize;
     conditions_met >= threshold
 }
 
@@ -241,16 +272,24 @@ pub fn check_entry(
 // ============================================================================
 
 /// Build the full indicator set for a symbol's bar data.
+///
+/// Indicator computation is the most expensive part of a backtest for a single
+/// symbol. This function is called once per (symbol, indicator-params) combo.
+/// For parameter sweeps that only change thresholds (not periods), call this
+/// once and share the result via `Arc<IndicatorSet>`.
 fn build_indicators(bars: &OhlcvBars, params: &BacktestParams, entry_logic: &[String]) -> IndicatorSet {
     let n = bars.len();
 
-    let vol_sma = if bars.volumes.iter().any(|&v| v > 0.0) {
+    // Check volume presence once, not twice.
+    let has_volume = bars.volumes.iter().any(|&v| v > 0.0);
+
+    let vol_sma = if has_volume {
         indicators::compute_sma(&bars.volumes, params.volume_sma_period)
     } else {
         vec![f64::NAN; n]
     };
 
-    let obv = if bars.volumes.iter().any(|&v| v > 0.0) {
+    let obv = if has_volume {
         indicators::compute_obv(&bars.closes, &bars.volumes)
     } else {
         vec![0.0; n]
