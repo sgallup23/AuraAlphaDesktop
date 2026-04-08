@@ -162,10 +162,24 @@ PGO typically yields 10-20% additional speedup on hot paths (indicator loops, ba
 These changes were applied directly to the installed Electron v8.2.0 `app.asar`:
 
 - `API_BASE_DIRECT` changed from `http://54.172.235.137:8020` to `https://auraalpha.cc`
-- `loadURL` changed from `aura://app/index.html` to `aura://app/`
-- API proxy simplified in `main.js` (removed dead routes)
+- `API_BASE_CDN` / `API_BASE_DIRECT` consolidated into single `API_BASE` constant
+- `loadURL` changed from `aura://app/index.html` to `aura://app/` (React router 404 fix)
+- API proxy simplified in `main.js` — removed dual-try fallback pattern, single fetch per request
+- Health polling interval: 5s → 30s (83% less network overhead)
+- Memory leak fixes: debounced saveWindowState (500ms), all intervals cleared on quit
+- Worker auto-start: error handling improved, failures surface via notification + log
 - `worker.py` + `compute_worker.py` copied to `resources/resources/grid_worker/`
 - Python deps installed on desktop: numpy, polars, psutil, requests, pyyaml
+- `worker.js`: findPython() updated to detect Python 3.14 (`C:\Python314\python.exe`)
+- Worker token auto-provisioned: `contributor-48f08a29` at `~/.aura-worker/grid_token.json`
+- Grid confirmed draining: 12,916 → 1,304 jobs after worker started
+
+**CRITICAL for next Electron build:**
+- Bundle `grid_worker/worker.py` + `compute_worker.py` in `resources/resources/grid_worker/`
+- Add Python 3.14 to findPython() version list in `worker.js`
+- Set `API_BASE` to `https://auraalpha.cc` (never use direct EC2 IP)
+- Set `loadURL` to `${SCHEME}://app/` (not `/index.html`)
+- EC2 port 8020 is NOT publicly accessible — always route through Cloudflare
 
 ---
 
